@@ -1,0 +1,11 @@
+build/
+dist/
+shots/
+.dsh-office-*/
+*.user
+.vscode/
+*.exe
+*.dll
+docs/
+build_report.py
+screenshot_log.txt
