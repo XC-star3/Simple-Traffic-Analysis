@@ -90,6 +90,7 @@ private:
     Vector<Station> m_stations;
     Vector<Road> m_roads;
     Graph m_graph;
+    HashMap<int> m_stationIndex;  // 站点编号 -> m_stations 下标，平均 O(1)
     Vector<Alert> m_alerts;
 };
 

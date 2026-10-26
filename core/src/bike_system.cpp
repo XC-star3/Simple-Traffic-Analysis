@@ -55,6 +55,7 @@ bool BikeSystem::addStation(int id, const char* name, int bikes, int capacity,
     s.x = x;
     s.y = y;
     m_stations.push_back(s);
+    m_stationIndex.put(id, m_stations.size() - 1);
     m_graph.addVertex();
     return true;
 }
@@ -154,21 +155,22 @@ bool BikeSystem::connected(int a, int b) const {
 }
 
 const Station* BikeSystem::findStation(int id) const {
-    for (int i = 0; i < m_stations.size(); ++i) {
-        if (m_stations[i].id == id) {
-            return &m_stations[i];
-        }
+    const int index = indexOf(id);
+    if (index < 0 || index >= m_stations.size()) {
+        return nullptr;
     }
-    return nullptr;
+    return &m_stations[index];
 }
 
 int BikeSystem::indexOf(int id) const {
-    for (int i = 0; i < m_stations.size(); ++i) {
-        if (m_stations[i].id == id) {
-            return i;
-        }
+    int index = -1;
+    if (!m_stationIndex.get(id, index)) {
+        return -1;
     }
-    return -1;
+    if (index < 0 || index >= m_stations.size() || m_stations[index].id != id) {
+        return -1;
+    }
+    return index;
 }
 
 bool BikeSystem::shortest(int src, int dst, WeightMode mode,
@@ -354,7 +356,6 @@ bool BikeSystem::planRoute(int depot, const Vector<int>& targets, WeightMode mod
 bool BikeSystem::simulate(const Vector<int>& tour, int truckCapacity,
                           int lowPercent, int highPercent, DispatchReport& report) {
     report = DispatchReport();
-    m_alerts.clear();
 
     if (tour.size() < 2) {
         std::snprintf(report.message, sizeof(report.message), "请先规划调度路线");
@@ -368,15 +369,37 @@ bool BikeSystem::simulate(const Vector<int>& tour, int truckCapacity,
         std::snprintf(report.message, sizeof(report.message), "告警阈值非法");
         return false;
     }
+    for (int k = 0; k < tour.size(); ++k) {
+        if (indexOf(tour[k]) < 0) {
+            std::snprintf(report.message, sizeof(report.message), "路线中存在未知站点");
+            return false;
+        }
+    }
+
+    // 先验证并计算所有路段，再修改站点库存；失败时保持数据不变。
+    Vector<double> legDist;
+    Vector<double> legTime;
+    for (int k = 0; k + 1 < tour.size(); ++k) {
+        Vector<int> p;
+        double d = 0.0;
+        if (!shortest(tour[k], tour[k + 1], WeightMode::Distance, p, d)) {
+            std::snprintf(report.message, sizeof(report.message), "路段不可达，无法完成调度");
+            return false;
+        }
+        legDist.push_back(d);
+        if (!shortest(tour[k], tour[k + 1], WeightMode::Time, p, d)) {
+            std::snprintf(report.message, sizeof(report.message), "路段不可达，无法完成调度");
+            return false;
+        }
+        legTime.push_back(d);
+    }
+
+    m_alerts.clear();
 
     int load = truckCapacity / 2;
     const int last = tour.size() - 1;
     for (int k = 0; k < tour.size(); ++k) {
         const int index = indexOf(tour[k]);
-        if (index < 0) {
-            std::snprintf(report.message, sizeof(report.message), "路线中存在未知站点");
-            return false;
-        }
         Station& st = m_stations[index];
         StopRecord rec;
         rec.stationId = st.id;
@@ -446,27 +469,17 @@ bool BikeSystem::simulate(const Vector<int>& tour, int truckCapacity,
         report.stops.push_back(rec);
     }
 
-    for (int k = 0; k + 1 < tour.size(); ++k) {
-        Vector<int> p;
-        double d = 0.0;
-        if (!shortest(tour[k], tour[k + 1], WeightMode::Distance, p, d)) {
-            std::snprintf(report.message, sizeof(report.message), "路段不可达，无法完成调度");
-            return false;
-        }
-        report.totalDist += d;
-        if (!shortest(tour[k], tour[k + 1], WeightMode::Time, p, d)) {
-            std::snprintf(report.message, sizeof(report.message), "路段不可达，无法完成调度");
-            return false;
-        }
-        report.totalTime += d;
+    for (int i = 0; i < legDist.size(); ++i) {
+        report.totalDist += legDist[i];
+        report.totalTime += legTime[i];
     }
 
     report.alertCount = m_alerts.size();
     report.ok = true;
     std::snprintf(report.message, sizeof(report.message),
-                  "调度完成：%d 站，总里程 %.1f，总耗时 %.1f 分钟，告警 %d 条",
-                  static_cast<int>(tour.size()), report.totalDist, report.totalTime,
-                  report.alertCount);
+                  "调度完成：%d 站，总里程 %.2f km，总耗时 %.1f 分钟，告警 %d 条",
+                  static_cast<int>(tour.size()), report.totalDist / 1000.0,
+                  report.totalTime, report.alertCount);
     return true;
 }
 
@@ -487,6 +500,7 @@ void BikeSystem::clear() {
     m_stations.clear();
     m_roads.clear();
     m_graph.clear();
+    m_stationIndex.clear();
     m_alerts.clear();
 }
 

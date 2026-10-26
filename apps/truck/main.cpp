@@ -1,5 +1,7 @@
 #include <QApplication>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFont>
 #include <QImage>
 #include <QStringList>
@@ -15,7 +17,12 @@ void saveScreenshot(QWidget& window, const QString& path) {
     QImage image(window.size(), QImage::Format_ARGB32);
     image.fill(Qt::white);
     window.render(&image);
-    const bool ok = image.save(path, "BMP");
+
+    const QFileInfo info(path);
+    if (!info.absolutePath().isEmpty()) {
+        QDir().mkpath(info.absolutePath());
+    }
+    const bool ok = info.suffix().isEmpty() ? image.save(path, "BMP") : image.save(path);
     QFile logFile{QStringLiteral("screenshot_log.txt")};
     if (logFile.open(QIODevice::Append)) {
         logFile.write(QString("path=%1 ok=%2 size=%3x%4\n")
@@ -31,14 +38,29 @@ void saveScreenshot(QWidget& window, const QString& path) {
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
-    app.setApplicationName("快递中转栈-队列混合调度模拟");
-    applyAppTheme(app);
-    app.setFont(QFont("Microsoft YaHei UI", 10));
-
-    MainWindow window;
-    window.show();
+    app.setApplicationName("快递中转场调度台");
 
     const QStringList args = app.arguments();
+    ef::setDark(args.contains("--dark"));
+    ef::apply(app);
+
+    MainWindow window;
+    const int sizeIndex = args.indexOf("--size");
+    if (sizeIndex >= 0 && sizeIndex + 1 < args.size()) {
+        const QStringList parts = args.at(sizeIndex + 1).split(QLatin1Char('x'),
+                                                              Qt::SkipEmptyParts);
+        if (parts.size() == 2) {
+            bool okWidth = false;
+            bool okHeight = false;
+            const int width = parts[0].toInt(&okWidth);
+            const int height = parts[1].toInt(&okHeight);
+            if (okWidth && okHeight && width > 0 && height > 0) {
+                window.resize(width, height);
+            }
+        }
+    }
+    window.show();
+
     if (args.contains("--demo")) {
         QTimer::singleShot(150, &app, [&window]() { window.runDemo(); });
     }

@@ -1,12 +1,14 @@
 #include "ds/truck_yard.h"
 
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 
 namespace ds {
 
 bool TruckYard::configure(int capacity, int tempCapacity, double feePerHour) {
-    if (capacity <= 0 || tempCapacity < 0 || feePerHour < 0.0) {
+    if (capacity <= 0 || tempCapacity < 0 || !std::isfinite(feePerHour) ||
+        feePerHour < 0.0) {
         m_configured = false;
         return false;
     }
@@ -23,6 +25,7 @@ bool TruckYard::configure(int capacity, int tempCapacity, double feePerHour) {
         m_queues[i].clear();
     }
     m_events.clear();
+    m_eventSeq = 0;
     m_revenue = 0.0;
     m_arrived = 0;
     m_served = 0;
@@ -61,7 +64,20 @@ bool TruckYard::arrive(int id, CargoType type, double t, char* err, int errSize)
     m_trucks.push_back(truck);
     const int index = m_trucks.size() - 1;
     m_index.put(id, index);
-    m_queues[static_cast<int>(type)].enqueue(index);
+
+    // 同优先级按到达时刻排队；同一时刻保持输入顺序（稳定插入）。
+    Queue<int>& sameType = m_queues[static_cast<int>(type)];
+    if (sameType.empty() ||
+        m_trucks[sameType.at(sameType.size() - 1)].arriveTime <= t) {
+        sameType.enqueue(index);  // 绝大多数情况是顺序输入，保持 O(1)
+    } else {
+        int insertPos = 0;
+        while (insertPos < sameType.size() &&
+               m_trucks[sameType.at(insertPos)].arriveTime <= t) {
+            ++insertPos;
+        }
+        sameType.insertAt(insertPos, index);
+    }
     ++m_arrived;
 
     log(t, "货车 %d（%s）到达，进入%s队列", id, cargoName(type),
@@ -88,7 +104,7 @@ bool TruckYard::depart(int id, double t, double* fee, double* dwell,
         setError(err, errSize, "货车已离场");
         return false;
     }
-    if (t < truck.arriveTime) {
+    if (!std::isfinite(t) || t < truck.arriveTime) {
         setError(err, errSize, "离场时刻不能早于到达时刻");
         return false;
     }
@@ -184,6 +200,75 @@ const Truck* TruckYard::findTruck(int id) const {
     return &m_trucks[index];
 }
 
+bool TruckYard::checkInvariant() const {
+    const int n = m_trucks.size();
+    Vector<unsigned char> seen;
+    seen.resize(n);
+    for (int i = 0; i < n; ++i) {
+        seen[i] = 0;
+    }
+
+    int active = 0;
+    int left = 0;
+    for (int i = 0; i < n; ++i) {
+        const Truck& t = m_trucks[i];
+        if (t.id <= 0 || !(t.arriveTime >= 0.0)) {
+            return false;
+        }
+        if (t.state == TruckState::Left) {
+            ++left;
+        } else {
+            ++active;
+        }
+        int mapped = -1;
+        if (!m_index.get(t.id, mapped) || mapped != i) {
+            return false;
+        }
+    }
+    if (m_index.size() != n || m_arrived != active + left) {
+        return false;
+    }
+
+    if (m_channel.size() > m_config.capacity || m_temp.size() > m_config.tempCapacity) {
+        return false;
+    }
+
+    for (int i = 0; i < m_channel.size(); ++i) {
+        const int index = m_channel.at(i);
+        if (index < 0 || index >= n || seen[index] ||
+            m_trucks[index].state != TruckState::Channel) {
+            return false;
+        }
+        seen[index] = 1;
+    }
+    for (int i = 0; i < m_temp.size(); ++i) {
+        const int index = m_temp.at(i);
+        if (index < 0 || index >= n || seen[index] ||
+            m_trucks[index].state != TruckState::Temp) {
+            return false;
+        }
+        seen[index] = 1;
+    }
+    for (int k = 0; k < 3; ++k) {
+        const Queue<int>& q = m_queues[k];
+        for (int i = 0; i < q.size(); ++i) {
+            const int index = q.at(i);
+            if (index < 0 || index >= n || seen[index] ||
+                m_trucks[index].state != TruckState::Waiting ||
+                static_cast<int>(m_trucks[index].type) != k) {
+                return false;
+            }
+            seen[index] = 1;
+        }
+    }
+    for (int i = 0; i < n; ++i) {
+        if (m_trucks[i].state != TruckState::Left && !seen[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 YardStats TruckYard::stats() const {
     YardStats s;
     s.revenue = m_revenue;
@@ -253,6 +338,7 @@ void TruckYard::log(double t, const char* fmt, ...) {
         m_events.removeAt(0);
     }
     m_events.push_back(e);
+    ++m_eventSeq;
 }
 
 void TruckYard::setError(char* err, int errSize, const char* msg) {

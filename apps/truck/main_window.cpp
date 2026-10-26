@@ -1,22 +1,25 @@
 #include "main_window.h"
 
+#include <QAbstractItemView>
+#include <QApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFont>
 #include <QFormLayout>
-#include <QGridLayout>
-#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QPlainTextEdit>
-#include <QPushButton>
+#include <QListWidget>
+#include <QListWidgetItem>
 #include <QRandomGenerator>
+#include <QScrollArea>
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVector>
 
+#include "common/theme.h"
+#include "common/widgets.h"
 #include "yard_canvas.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -39,174 +42,255 @@ void MainWindow::runDemo() {
 
     m_now = 12.0;
     double fee = 0.0;
-    m_yard.depart(1002, m_now, &fee);
+    char err[128] = {0};
+    const bool departed =
+        m_yard.depart(1002, m_now, &fee, nullptr, err, sizeof(err));
     m_nowSpin->setValue(m_now);
     m_nextId = 1011;
     m_arriveId->setValue(m_nextId);
     m_departId->setValue(1003);
     refreshAll();
-    setStatus("演示数据：10 辆车已到达，T1002 已完成让路离场");
+    setStatus(departed
+                  ? QString("演示数据：10 辆车已到达，T1002 让路离场，费用 %1 元")
+                        .arg(fee, 0, 'f', 2)
+                  : QString("演示数据已装载，但 T1002 离场失败：%1").arg(QString::fromUtf8(err)));
 }
 
 void MainWindow::buildUi() {
-    setWindowTitle("快递中转栈-队列混合调度模拟");
-    resize(1500, 900);
+    setWindowTitle("快递中转场 / 调度台");
+    resize(1440, 900);
+    setMinimumSize(1200, 760);
 
     auto* central = new QWidget(this);
     setCentralWidget(central);
-    auto* root = new QHBoxLayout(central);
-    root->setContentsMargins(12, 12, 12, 12);
-    root->setSpacing(12);
+    auto* root = new QVBoxLayout(central);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
 
-    // ---------------- 左侧控制面板 ----------------
+    root->addWidget(new ef::EfTriStrip(central));
+    m_bar = new ef::EfCommandBar(QStringLiteral("T"), QStringLiteral("TRANSIT"),
+                                 QStringLiteral("快递中转场"), QStringLiteral("LIVE"),
+                                 QStringLiteral("运行态势"), central);
+    root->addWidget(m_bar);
+
+    auto* content = new QWidget(central);
+    auto* columns = new QHBoxLayout(content);
+    columns->setContentsMargins(14, 14, 14, 14);
+    columns->setSpacing(12);
+    root->addWidget(content, 1);
+
+    // ---------------- 左侧控制区 ----------------
     auto* left = new QWidget;
-    left->setFixedWidth(315);
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(10);
+    leftLayout->setSpacing(8);
 
-    auto* configGroup = new QGroupBox("场地参数");
-    auto* configForm = new QFormLayout(configGroup);
+    auto* config = new ef::EfPanel(QStringLiteral("PARAMETERS"), QStringLiteral("场地参数"));
+    auto* configForm = new QFormLayout;
+    configForm->setContentsMargins(0, 0, 0, 0);
+    configForm->setHorizontalSpacing(10);
+    configForm->setVerticalSpacing(6);
     m_capacity = new QSpinBox;
     m_capacity->setRange(1, 12);
     m_capacity->setValue(8);
-    m_capacity->setSuffix(" 辆");
+    m_capacity->setSuffix(QStringLiteral(" 辆"));
     m_tempCapacity = new QSpinBox;
     m_tempCapacity->setRange(0, 12);
     m_tempCapacity->setValue(7);
-    m_tempCapacity->setSuffix(" 辆");
+    m_tempCapacity->setSuffix(QStringLiteral(" 辆"));
     m_fee = new QDoubleSpinBox;
     m_fee->setRange(0.0, 10000.0);
     m_fee->setDecimals(2);
     m_fee->setValue(5.0);
-    m_fee->setSuffix(" 元/小时");
-    configForm->addRow("主通道容量", m_capacity);
-    configForm->addRow("临时区容量", m_tempCapacity);
-    configForm->addRow("停车费率", m_fee);
-    auto* applyButton = new QPushButton("应用参数并重置");
-    configForm->addRow(applyButton);
-    leftLayout->addWidget(configGroup);
+    m_fee->setSuffix(QStringLiteral(" 元/小时"));
+    configForm->addRow(QStringLiteral("主通道容量"), m_capacity);
+    configForm->addRow(QStringLiteral("临时区容量"), m_tempCapacity);
+    configForm->addRow(QStringLiteral("停车费率"), m_fee);
+    config->body()->addLayout(configForm);
+    auto* applyButton =
+        new ef::EfButton(QStringLiteral("应用参数并重置"), ef::EfButton::Variant::Secondary);
+    applyButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    config->body()->addWidget(applyButton);
+    leftLayout->addWidget(config);
 
-    auto* arriveGroup = new QGroupBox("货车到达");
-    auto* arriveForm = new QFormLayout(arriveGroup);
+    auto* arrive = new ef::EfPanel(QStringLiteral("ARRIVAL"), QStringLiteral("货车到达"));
+    auto* arriveForm = new QFormLayout;
+    arriveForm->setContentsMargins(0, 0, 0, 0);
+    arriveForm->setHorizontalSpacing(10);
+    arriveForm->setVerticalSpacing(6);
     m_arriveId = new QSpinBox;
     m_arriveId->setRange(1, 999999);
     m_arriveId->setValue(1001);
     m_type = new QComboBox;
-    m_type->addItem("生鲜件（优先级最高）");
-    m_type->addItem("普通件");
-    m_type->addItem("大件货（优先级最低）");
-    arriveForm->addRow("货车编号", m_arriveId);
-    arriveForm->addRow("货物类型", m_type);
-    auto* arriveButton = new QPushButton("到达并排队");
-    arriveForm->addRow(arriveButton);
-    auto* hint = new QLabel("到达时刻取下方“当前时刻”");
-    hint->setStyleSheet("color:#6B7280;font-size:11px;");
-    arriveForm->addRow(hint);
-    leftLayout->addWidget(arriveGroup);
+    m_type->addItem(QStringLiteral("生鲜件（优先级最高）"));
+    m_type->addItem(QStringLiteral("普通件"));
+    m_type->addItem(QStringLiteral("大件货（优先级最低）"));
+    arriveForm->addRow(QStringLiteral("货车编号"), m_arriveId);
+    arriveForm->addRow(QStringLiteral("货物类型"), m_type);
+    arrive->body()->addLayout(arriveForm);
+    auto* arriveButton =
+        new ef::EfButton(QStringLiteral("到达并排队"), ef::EfButton::Variant::Primary);
+    arriveButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    arrive->body()->addWidget(arriveButton);
+    arrive->body()->addWidget(
+        ef::makeHint(QStringLiteral("到达时刻取仿真时钟里的当前时刻。"), arrive));
+    leftLayout->addWidget(arrive);
 
-    auto* departGroup = new QGroupBox("货车离场");
-    auto* departForm = new QFormLayout(departGroup);
+    auto* depart = new ef::EfPanel(QStringLiteral("DEPARTURE"), QStringLiteral("货车离场"));
+    auto* departForm = new QFormLayout;
+    departForm->setContentsMargins(0, 0, 0, 0);
+    departForm->setHorizontalSpacing(10);
+    departForm->setVerticalSpacing(6);
     m_departId = new QSpinBox;
     m_departId->setRange(1, 999999);
     m_departId->setValue(1001);
-    departForm->addRow("货车编号", m_departId);
-    auto* departButton = new QPushButton("离场（自动让路）");
-    departForm->addRow(departButton);
-    leftLayout->addWidget(departGroup);
+    departForm->addRow(QStringLiteral("货车编号"), m_departId);
+    depart->body()->addLayout(departForm);
+    auto* departButton = new ef::EfButton(QStringLiteral("离场（自动让路）"),
+                                          ef::EfButton::Variant::Primary);
+    departButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    depart->body()->addWidget(departButton);
+    leftLayout->addWidget(depart);
+    leftLayout->addStretch(1);
 
-    auto* simGroup = new QGroupBox("仿真时钟 / 自动模拟");
-    auto* simForm = new QFormLayout(simGroup);
+    auto* leftScroll = new QScrollArea;
+    leftScroll->setWidgetResizable(true);
+    leftScroll->setFrameShape(QFrame::NoFrame);
+    leftScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    leftScroll->setWidget(left);
+    leftScroll->setFixedWidth(300);
+    columns->addWidget(leftScroll);
+
+    // ---------------- 中间运行态势 ----------------
+    auto* center = new QWidget;
+    center->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    auto* centerLayout = new QVBoxLayout(center);
+    centerLayout->setContentsMargins(0, 0, 0, 0);
+    centerLayout->setSpacing(10);
+    auto* yardPanel = new ef::EfPanel(QStringLiteral("LIVE YARD"), QStringLiteral("运行态势"));
+    m_canvas = new YardCanvas(yardPanel);
+    m_canvas->setYard(&m_yard);
+    m_canvas->setAccessibleName(QStringLiteral("主通道、临时区与优先级队列示意图"));
+    m_canvas->setMinimumSize(480, 438);
+    yardPanel->body()->setContentsMargins(0, 0, 0, 0);
+    yardPanel->body()->addWidget(m_canvas, 1);
+    centerLayout->addWidget(yardPanel, 1);
+
+    auto* simBar = new ef::EfPanel(QStringLiteral("SIMULATION"), QStringLiteral("仿真时钟"));
+    auto* simRows = new QVBoxLayout;
+    simRows->setContentsMargins(0, 0, 0, 0);
+    simRows->setSpacing(6);
+    auto* fieldRow = new QHBoxLayout;
+    fieldRow->setContentsMargins(0, 0, 0, 0);
+    fieldRow->setSpacing(8);
     m_nowSpin = new QDoubleSpinBox;
     m_nowSpin->setRange(0.0, 100000.0);
     m_nowSpin->setDecimals(1);
     m_nowSpin->setValue(0.0);
-    m_nowSpin->setSuffix(" 分钟");
+    m_nowSpin->setSuffix(QStringLiteral(" 分钟"));
+    m_nowSpin->setFixedWidth(112);
     m_interval = new QSpinBox;
     m_interval->setRange(200, 3000);
     m_interval->setSingleStep(100);
     m_interval->setValue(700);
-    m_interval->setSuffix(" ms");
-    simForm->addRow("当前时刻", m_nowSpin);
-    simForm->addRow("事件间隔", m_interval);
-    m_autoButton = new QPushButton("开始自动模拟");
-    simForm->addRow(m_autoButton);
-    auto* stepButton = new QPushButton("单步推进 2 分钟");
-    simForm->addRow(stepButton);
-    auto* resetButton = new QPushButton("重置系统");
-    simForm->addRow(resetButton);
-    leftLayout->addWidget(simGroup);
-    leftLayout->addStretch();
-
-    root->addWidget(left);
-
-    // ---------------- 中间画布 ----------------
-    auto* center = new QWidget;
-    auto* centerLayout = new QVBoxLayout(center);
-    centerLayout->setContentsMargins(0, 0, 0, 0);
-    auto* canvasTitle = new QLabel("运行态势");
-    canvasTitle->setStyleSheet("font-size:16px;font-weight:600;color:#1F2A37;");
-    m_canvas = new YardCanvas;
-    m_canvas->setYard(&m_yard);
-    centerLayout->addWidget(canvasTitle);
-    centerLayout->addWidget(m_canvas, 1);
-    root->addWidget(center, 1);
+    m_interval->setSuffix(QStringLiteral(" ms"));
+    m_interval->setFixedWidth(92);
+    fieldRow->addWidget(ef::makeField(QStringLiteral("当前时刻"), simBar));
+    fieldRow->addWidget(m_nowSpin);
+    fieldRow->addWidget(ef::makeField(QStringLiteral("事件间隔"), simBar));
+    fieldRow->addWidget(m_interval);
+    fieldRow->addStretch(1);
+    simRows->addLayout(fieldRow);
+    auto* actionRow = new QHBoxLayout;
+    actionRow->setContentsMargins(0, 0, 0, 0);
+    actionRow->setSpacing(6);
+    m_autoButton =
+        new ef::EfButton(QStringLiteral("开始自动模拟"), ef::EfButton::Variant::Primary);
+    auto* stepButton =
+        new ef::EfButton(QStringLiteral("单步推进 2 分钟"), ef::EfButton::Variant::Secondary);
+    auto* resetButton =
+        new ef::EfButton(QStringLiteral("重置系统"), ef::EfButton::Variant::Secondary);
+    m_autoButton->setFixedWidth(126);
+    stepButton->setFixedWidth(142);
+    resetButton->setFixedWidth(92);
+    actionRow->addWidget(m_autoButton);
+    actionRow->addWidget(stepButton);
+    actionRow->addWidget(resetButton);
+    actionRow->addStretch(1);
+    simRows->addLayout(actionRow);
+    simBar->body()->addLayout(simRows);
+    // 仿真条的内容有固定高度，别再被下面的画布挤压；画布自己会占用剩余空间。
+    simBar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    centerLayout->addWidget(simBar);
+    columns->addWidget(center, 1);
 
     // ---------------- 右侧统计与日志 ----------------
     auto* right = new QWidget;
-    right->setFixedWidth(380);
+    right->setFixedWidth(360);
     auto* rightLayout = new QVBoxLayout(right);
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(10);
 
-    auto* statsGroup = new QGroupBox("统计");
-    auto* statsGrid = new QGridLayout(statsGroup);
-    statsGrid->setColumnStretch(1, 1);
-    auto addStat = [&](int row, const QString& name, QLabel*& out) {
-        auto* key = new QLabel(name);
-        key->setStyleSheet("color:#6B7280;");
-        out = new QLabel("-");
-        out->setStyleSheet("font-weight:600;color:#1F2A37;");
-        statsGrid->addWidget(key, row, 0);
-        statsGrid->addWidget(out, row, 1);
-    };
-    addStat(0, "累计收入", m_statRevenue);
-    addStat(1, "主通道占用", m_statChannel);
-    addStat(2, "临时区占用", m_statTemp);
-    addStat(3, "队列积压", m_statQueues);
-    addStat(4, "到达 / 服务", m_statCounts);
-    addStat(5, "临时区峰值", m_statPeak);
-    rightLayout->addWidget(statsGroup);
+    auto* metricsPanel =
+        new ef::EfPanel(QStringLiteral("METRICS"), QStringLiteral("统计"));
+    m_metrics = new ef::EfMetrics(3, metricsPanel);
+    metricsPanel->body()->addWidget(m_metrics);
+    m_queueFields = ef::makeField(QStringLiteral("生鲜 0  │  普通 0  │  大件 0"), metricsPanel);
+    metricsPanel->body()->addWidget(m_queueFields);
+    rightLayout->addWidget(metricsPanel);
 
-    auto* logGroup = new QGroupBox("事件日志");
-    auto* logLayout = new QVBoxLayout(logGroup);
-    m_log = new QPlainTextEdit;
-    m_log->setReadOnly(true);
-    m_log->setMaximumBlockCount(600);
-    QFont logFont("Consolas", 9);
-    m_log->setFont(logFont);
-    logLayout->addWidget(m_log);
-    rightLayout->addWidget(logGroup, 1);
-
-    root->addWidget(right);
+    auto* logPanel = new ef::EfPanel(QStringLiteral("EVENT LOG"), QStringLiteral("事件日志"));
+    logPanel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    m_log = new QListWidget(logPanel);
+    m_log->setSelectionMode(QAbstractItemView::NoSelection);
+    m_log->setFocusPolicy(Qt::NoFocus);
+    m_log->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_log->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_log->setUniformItemSizes(true);
+    m_log->setWordWrap(false);
+    m_log->setFont(ef::font(ef::FontRole::Field));
+    m_log->setItemDelegate(new ef::EfListDelegate(m_log));
+    m_log->setAccessibleName(QStringLiteral("事件日志"));
+    m_log->setMinimumHeight(240);
+    logPanel->body()->addWidget(m_log, 1);
+    rightLayout->addWidget(logPanel, 1);
+    columns->addWidget(right);
 
     // ---------------- 连接 ----------------
     connect(applyButton, &QPushButton::clicked, this, [this]() { applyConfig(); });
     connect(arriveButton, &QPushButton::clicked, this, [this]() { doArrive(); });
     connect(departButton, &QPushButton::clicked, this, [this]() { doDepart(); });
     connect(m_autoButton, &QPushButton::clicked, this, [this]() { toggleAuto(); });
-    connect(stepButton, &QPushButton::clicked, this, [this]() { autoTick(); });
+    connect(stepButton, &QPushButton::clicked, this, [this]() { autoTick(false); });
     connect(resetButton, &QPushButton::clicked, this, [this]() { resetAll(); });
+    connect(m_interval, &QSpinBox::valueChanged, this, [this](int value) {
+        if (m_autoTimer->isActive()) {
+            m_autoTimer->setInterval(value);
+        }
+    });
+    connect(m_bar->themeButton(), &QPushButton::clicked, this, [this]() { toggleTheme(); });
 
     m_autoTimer = new QTimer(this);
-    connect(m_autoTimer, &QTimer::timeout, this, [this]() { autoTick(); });
+    connect(m_autoTimer, &QTimer::timeout, this, [this]() { autoTick(true); });
 
-    statusBar()->showMessage("就绪");
+    statusBar()->setSizeGripEnabled(false);
+    auto* ready = new QLabel(QStringLiteral("// READY"), this);
+    ready->setObjectName(QStringLiteral("efEyebrow"));
+    ready->setFont(ef::font(ef::FontRole::Eyebrow));
+    statusBar()->addPermanentWidget(ready);
+    statusBar()->showMessage(QStringLiteral("就绪"));
+
+    // 启动时不要把焦点落在命令栏的“深色”按钮上；让容器持有焦点，
+    // 用户按 Tab 后再进入第一个输入控件。
+    central->setFocusPolicy(Qt::StrongFocus);
+    central->setFocus(Qt::OtherFocusReason);
 }
 
 void MainWindow::applyConfig() {
+    m_autoTimer->stop();
+    m_autoButton->setText(QStringLiteral("开始自动模拟"));
     if (!m_yard.configure(m_capacity->value(), m_tempCapacity->value(), m_fee->value())) {
-        setStatus("参数非法，请检查容量与费率");
+        setStatus(QStringLiteral("参数非法，请检查容量与费率"));
         return;
     }
     m_now = 0.0;
@@ -214,16 +298,16 @@ void MainWindow::applyConfig() {
     m_arriveId->setValue(m_nextId);
     m_departId->setValue(m_nextId);
     m_nowSpin->setValue(0.0);
-    m_lastEvents = 0;
+    m_lastEventSeq = -1;
     m_log->clear();
     m_canvas->resetAnimation();
     refreshAll();
-    setStatus("参数已应用，系统已重置");
+    setStatus(QStringLiteral("参数已应用，系统已重置"));
 }
 
 void MainWindow::doArrive() {
     if (!m_yard.configured()) {
-        setStatus("系统尚未初始化");
+        setStatus(QStringLiteral("系统尚未初始化"));
         return;
     }
     const int id = m_arriveId->value();
@@ -248,7 +332,7 @@ void MainWindow::doArrive() {
 
 void MainWindow::doDepart() {
     if (!m_yard.configured()) {
-        setStatus("系统尚未初始化");
+        setStatus(QStringLiteral("系统尚未初始化"));
         return;
     }
     const int id = m_departId->value();
@@ -270,12 +354,18 @@ void MainWindow::doDepart() {
                   .arg(fee, 0, 'f', 2));
 }
 
-void MainWindow::autoTick() {
+void MainWindow::autoTick(bool randomEvent) {
     if (!m_yard.configured()) {
         return;
     }
     m_now += 2.0;
     m_nowSpin->setValue(m_now);
+
+    if (!randomEvent) {
+        refreshAll();
+        setStatus(QString("时间已推进到 %1 分钟").arg(m_now, 0, 'f', 1));
+        return;
+    }
 
     const int dice = QRandomGenerator::global()->bounded(100);
     if (dice < 65) {
@@ -310,52 +400,117 @@ void MainWindow::autoTick() {
 void MainWindow::toggleAuto() {
     if (m_autoTimer->isActive()) {
         m_autoTimer->stop();
-        m_autoButton->setText("开始自动模拟");
+        m_autoButton->setText(QStringLiteral("开始自动模拟"));
+        setStatus(QStringLiteral("自动模拟已暂停"));
     } else {
         m_autoTimer->setInterval(m_interval->value());
         m_autoTimer->start();
-        m_autoButton->setText("暂停自动模拟");
+        m_autoButton->setText(QStringLiteral("暂停自动模拟"));
+        setStatus(QStringLiteral("自动模拟运行中"));
     }
 }
 
 void MainWindow::resetAll() {
     m_autoTimer->stop();
-    m_autoButton->setText("开始自动模拟");
+    m_autoButton->setText(QStringLiteral("开始自动模拟"));
     applyConfig();
 }
 
 void MainWindow::refreshAll() {
-    m_canvas->update();
+    if (m_canvas != nullptr) {
+        m_canvas->update();
+    }
     const ds::YardStats s = m_yard.stats();
-    if (m_statRevenue != nullptr) {
-        m_statRevenue->setText(QString("%1 元").arg(s.revenue, 0, 'f', 2));
-        m_statChannel->setText(QString("%1 / %2 辆").arg(s.inChannel).arg(m_yard.capacity()));
-        m_statTemp->setText(QString("%1 / %2 辆").arg(s.inTemp).arg(m_yard.tempCapacity()));
-        m_statQueues->setText(QString("生鲜 %1 · 普通 %2 · 大件 %3")
-                                  .arg(s.waiting[0])
-                                  .arg(s.waiting[1])
-                                  .arg(s.waiting[2]));
-        m_statCounts->setText(QString("%1 / %2 辆").arg(s.arrived).arg(s.served));
-        m_statPeak->setText(QString("%1 辆").arg(s.maxTempUsed));
+    const int totalQueue = s.waiting[0] + s.waiting[1] + s.waiting[2];
+    const int capacity = m_yard.capacity();
+    if (m_metrics != nullptr) {
+        m_metrics->setMetrics({
+            {QStringLiteral("REVENUE"), QString::number(s.revenue, 'f', 2),
+             QStringLiteral("元"), QStringLiteral("累计收入"), false},
+            {QStringLiteral("CHANNEL"),
+             QString("%1/%2").arg(s.inChannel).arg(capacity), QStringLiteral("辆"),
+             QStringLiteral("主通道"), capacity > 0 && s.inChannel == capacity},
+            {QStringLiteral("QUEUE"), QString::number(totalQueue), QStringLiteral("辆"),
+             QStringLiteral("排队"), false},
+            {QStringLiteral("TEMP"),
+             QString("%1/%2").arg(s.inTemp).arg(m_yard.tempCapacity()),
+             QStringLiteral("辆"), QStringLiteral("临时区"), false},
+            {QStringLiteral("ARRIVED"),
+             QString("%1/%2").arg(s.arrived).arg(s.served), QStringLiteral("辆"),
+             QStringLiteral("到达 / 服务"), false},
+            {QStringLiteral("PEAK"), QString::number(s.maxTempUsed), QStringLiteral("辆"),
+             QStringLiteral("临时区峰值"), false},
+        });
+    }
+    if (m_queueFields != nullptr) {
+        m_queueFields->setText(ef::fields({
+            QString("生鲜 %1").arg(s.waiting[0]),
+            QString("普通 %1").arg(s.waiting[1]),
+            QString("大件 %1").arg(s.waiting[2]),
+            QString("空位 %1").arg(s.freeSlots),
+        }));
+    }
+    if (m_bar != nullptr) {
+        m_bar->setFields(ef::fields({
+            QString("主通道 %1/%2").arg(s.inChannel).arg(capacity),
+            QString("排队 %1").arg(totalQueue),
+            QString("时钟 %1 分钟").arg(m_now, 0, 'f', 1),
+        }));
+    }
+    if (m_canvas != nullptr) {
+        m_canvas->setAccessibleDescription(
+            QString("主通道 %1/%2，临时区 %3/%4，生鲜排队 %5，普通排队 %6，"
+                    "大件排队 %7，累计收入 %8 元。")
+                .arg(s.inChannel)
+                .arg(capacity)
+                .arg(s.inTemp)
+                .arg(m_yard.tempCapacity())
+                .arg(s.waiting[0])
+                .arg(s.waiting[1])
+                .arg(s.waiting[2])
+                .arg(s.revenue, 0, 'f', 2));
     }
     syncEvents();
 }
 
 void MainWindow::syncEvents() {
-    if (m_log == nullptr) {
+    if (m_log == nullptr || m_yard.eventSeq() == m_lastEventSeq) {
         return;
     }
+    m_lastEventSeq = m_yard.eventSeq();
     const ds::Vector<ds::Event>& events = m_yard.events();
-    if (events.size() < m_lastEvents) {
-        m_log->clear();
-        m_lastEvents = 0;
+    m_log->setUpdatesEnabled(false);
+    m_log->clear();
+    if (events.empty()) {
+        auto* item = new QListWidgetItem(
+            QStringLiteral("// 暂无事件。车辆到达、离场和告警会记录在这里。"));
+        item->setFlags(Qt::NoItemFlags);
+        item->setForeground(QBrush(ef::palette().ink2));
+        m_log->addItem(item);
+    } else {
+        for (int i = 0; i < events.size(); ++i) {
+            auto* item = new QListWidgetItem(
+                QString("%1  │  %2")
+                    .arg(events[i].time, 0, 'f', 1)
+                    .arg(QString::fromUtf8(events[i].text)));
+            item->setFont(ef::font(ef::FontRole::Field));
+            item->setToolTip(item->text());
+            m_log->addItem(item);
+        }
     }
-    for (int i = m_lastEvents; i < events.size(); ++i) {
-        m_log->appendPlainText(QString("[%1 min] %2")
-                                   .arg(events[i].time, 0, 'f', 1)
-                                   .arg(QString::fromUtf8(events[i].text)));
-    }
-    m_lastEvents = events.size();
+    m_log->setUpdatesEnabled(true);
+    m_log->scrollToBottom();
+}
+
+void MainWindow::toggleTheme() {
+    ef::setDark(!ef::isDark());
+    ef::apply(*qApp);
+    m_bar->themeButton()->setText(ef::isDark() ? QStringLiteral("浅色")
+                                               : QStringLiteral("深色"));
+    m_lastEventSeq = -1;
+    refreshAll();
+    setStatus(ef::isDark() ? QStringLiteral("已切换到深色主题")
+                           : QStringLiteral("已切换到浅色主题"));
 }
 
 void MainWindow::setStatus(const QString& text) {

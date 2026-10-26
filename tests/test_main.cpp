@@ -80,6 +80,7 @@ void testContainers() {
 void testTruckYard() {
     ds::TruckYard yard;
     CHECK(yard.configure(3, 2, 60.0));
+    CHECK(yard.checkInvariant());
     CHECK(yard.arrive(101, ds::CargoType::Fresh, 0.0));
     CHECK(yard.arrive(102, ds::CargoType::Normal, 1.0));
     CHECK(yard.arrive(103, ds::CargoType::Bulk, 2.0));
@@ -87,6 +88,7 @@ void testTruckYard() {
     CHECK(yard.arrive(104, ds::CargoType::Fresh, 3.0));
     CHECK(yard.channel().size() == 3);
     CHECK(yard.queue(ds::CargoType::Fresh).size() == 1);
+    CHECK(yard.checkInvariant());
 
     double fee = -1.0;
     double dwell = -1.0;
@@ -96,6 +98,7 @@ void testTruckYard() {
     CHECK(yard.channel().size() == 3);
     CHECK(yard.channel().at(0) == 1);  // 102 在栈底
     CHECK(yard.channel().at(2) == 3);  // 104 补位到栈顶
+    CHECK(yard.checkInvariant());
 
     // 取消排队：不计费。
     ds::TruckYard cancelYard;
@@ -104,6 +107,7 @@ void testTruckYard() {
     CHECK(cancelYard.arrive(202, ds::CargoType::Fresh, 1.0));
     CHECK(cancelYard.depart(202, 2.0, &fee, &dwell));
     CHECK(std::fabs(fee) < 1e-9);
+    CHECK(cancelYard.checkInvariant());
 
     // 临时区不足：拒绝离场且状态不变。
     ds::TruckYard small;
@@ -115,6 +119,7 @@ void testTruckYard() {
     CHECK(!small.depart(301, 1.0, nullptr, nullptr, err, sizeof(err)));
     CHECK(err[0] != '\0');
     CHECK(small.channel().size() == 3);
+    CHECK(small.checkInvariant());
 
     // 优先级：空位优先给生鲜。
     ds::TruckYard priority;
@@ -127,6 +132,7 @@ void testTruckYard() {
     CHECK(priority.channel().at(0) == 0 && priority.truckAt(0).id == 401);
     CHECK(priority.channel().at(1) == 2 && priority.truckAt(2).id == 403);  // 生鲜优先
     CHECK(priority.queue(ds::CargoType::Bulk).size() == 1);
+    CHECK(priority.checkInvariant());
 
     CHECK(!priority.arrive(401, ds::CargoType::Fresh, 2.0));  // 编号重复
     const ds::YardStats stats = priority.stats();
@@ -134,6 +140,32 @@ void testTruckYard() {
     CHECK(stats.served == 1);
     CHECK(stats.inChannel == 2);
     CHECK(stats.freeSlots == 0);
+}
+
+void testTruckArrivalOrder() {
+    // 同优先级按到达时刻排队：乱序输入时较早到达的 T502 应先补位。
+    ds::TruckYard yard;
+    CHECK(yard.configure(1, 0, 10.0));
+    CHECK(yard.arrive(501, ds::CargoType::Normal, 10.0));
+    CHECK(yard.arrive(502, ds::CargoType::Normal, 5.0));
+    CHECK(yard.arrive(503, ds::CargoType::Normal, 7.0));
+    CHECK(yard.queue(ds::CargoType::Normal).at(0) == 1);  // 502
+    CHECK(yard.queue(ds::CargoType::Normal).at(1) == 2);  // 503
+    CHECK(yard.depart(501, 11.0));
+    CHECK(yard.channel().size() == 1);
+    CHECK(yard.truckAt(yard.channel().at(0)).id == 502);
+    CHECK(yard.checkInvariant());
+}
+
+void testTruckLogCap() {
+    ds::TruckYard yard;
+    CHECK(yard.configure(100, 0, 1.0));
+    for (int i = 0; i < 400; ++i) {
+        CHECK(yard.arrive(1000 + i, ds::CargoType::Normal, i * 0.1));
+    }
+    CHECK(yard.events().size() == 300);
+    CHECK(yard.eventSeq() > 400);  // 单调序号，不受 300 条上限影响
+    CHECK(yard.checkInvariant());
 }
 
 void testDijkstraAgainstFloyd() {
@@ -204,9 +236,12 @@ void testBikeSystem() {
     CHECK(s.blockRoad(2, 3));
     CHECK(!s.hasActiveRoad(2, 3));
     CHECK(!s.shortest(1, 4, ds::WeightMode::Distance, path, total));
+    CHECK(!s.shortest(4, 1, ds::WeightMode::Distance, path, total));
     CHECK(!s.connected(1, 4));
+    CHECK(!s.connected(4, 1));  // 无向边两条弧都要断开
     CHECK(s.restoreRoad(2, 3));
     CHECK(s.shortest(1, 4, ds::WeightMode::Distance, path, total));
+    CHECK(s.shortest(4, 1, ds::WeightMode::Distance, path, total));
 
     ds::Vector<int> targets;
     targets.push_back(3);
@@ -228,10 +263,18 @@ void testBikeSystem() {
     CHECK(report.stops.size() == tour.size());
     CHECK(report.totalDist > 0.0);
     CHECK(report.totalTime > 0.0);
+    CHECK(report.alertCount == 0);
 
-    // 断边后模拟应失败（路径不可达）。
+    // 断边后模拟应失败（路径不可达），并且失败不能改动站点库存。
+    int before[5];
+    for (int i = 0; i < 5; ++i) {
+        before[i] = s.stationAt(i).bikes;
+    }
     CHECK(s.blockRoad(2, 3));
     CHECK(!s.simulate(tour, 8, 20, 80, report));
+    for (int i = 0; i < 5; ++i) {
+        CHECK(s.stationAt(i).bikes == before[i]);
+    }
 }
 
 void testBikeSingleTarget() {
@@ -260,14 +303,63 @@ void testBikeSingleTarget() {
     CHECK(!s.blockRoad(2, 3));  // 已阻断
 }
 
+void testBikeTimeWeights() {
+    ds::BikeSystem s;
+    CHECK(s.addStation(1, "A", 10, 20, 0, 0));
+    CHECK(s.addStation(2, "B", 10, 20, 100, 0));
+    CHECK(s.addStation(3, "C", 10, 20, 50, 80));
+    // 直达距离最短，但耗时最长；绕行则相反。
+    CHECK(s.addRoad(1, 2, 1.0, 100.0));
+    CHECK(s.addRoad(1, 3, 10.0, 1.0));
+    CHECK(s.addRoad(3, 2, 10.0, 1.0));
+
+    ds::Vector<int> path;
+    double total = 0.0;
+    CHECK(s.shortest(1, 2, ds::WeightMode::Distance, path, total));
+    CHECK(std::fabs(total - 1.0) < 1e-9);
+    CHECK(path.size() == 2 && path[0] == 1 && path[1] == 2);
+    CHECK(s.shortest(1, 2, ds::WeightMode::Time, path, total));
+    CHECK(std::fabs(total - 2.0) < 1e-9);
+    CHECK(path.size() == 3 && path[0] == 1 && path[1] == 3 && path[2] == 2);
+}
+
+void testBikeAlerts() {
+    ds::BikeSystem s;
+    buildBikeNetwork(s);
+    ds::Vector<int> targets;
+    targets.push_back(2);
+    targets.push_back(4);
+    ds::Vector<int> tour;
+    ds::Vector<int> full;
+    double total = 0.0;
+    char err[128] = {0};
+    CHECK(s.planRoute(1, targets, ds::WeightMode::Distance, tour, full, total, err,
+                      sizeof(err)));
+    ds::DispatchReport report;
+    // 载量 2 时，T2 只需补 1 辆，仍低于下限 4，应产生告警。
+    CHECK(s.simulate(tour, 2, 20, 80, report));
+    CHECK(report.alertCount >= 1);
+    bool foundLow = false;
+    for (int i = 0; i < s.alerts().size(); ++i) {
+        if (s.alerts()[i].stationId == 2) {
+            foundLow = true;
+        }
+    }
+    CHECK(foundLow);
+}
+
 }  // namespace
 
 int main() {
     testContainers();
     testTruckYard();
+    testTruckArrivalOrder();
+    testTruckLogCap();
     testDijkstraAgainstFloyd();
     testBikeSystem();
     testBikeSingleTarget();
+    testBikeTimeWeights();
+    testBikeAlerts();
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");
         return 0;

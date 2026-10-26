@@ -207,6 +207,19 @@ public:
         --m_size;
     }
 
+    // 按位置插入（用于“同优先级按到达时刻排队”）。
+    void insertAt(int pos, const T& v) {
+        assert(pos >= 0 && pos <= m_size);
+        if (m_size == m_cap) {
+            grow();
+        }
+        for (int i = m_size; i > pos; --i) {
+            m_data[(m_head + i) % m_cap] = m_data[(m_head + i - 1) % m_cap];
+        }
+        m_data[(m_head + pos) % m_cap] = v;
+        ++m_size;
+    }
+
 private:
     void grow() {
         int nc = m_cap == 0 ? 8 : m_cap * 2;

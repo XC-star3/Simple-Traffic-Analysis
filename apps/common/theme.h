@@ -1,71 +1,103 @@
 #pragma once
 
-#include <QApplication>
+// 界面外观（Endfield-flavoured console）。
+// 变体：Klein blue（accent #002FA7 / cool blue paper / standard cut / contours /
+// standard density / full motion）。深色主题把强调色提亮为 #7FA0FF。
+// 主视觉：题 2 为主通道 + 临时栈 + 三条队列；题 7 为校园路网与调度路线。
+// 页面类型：控制台。
+//
+// 颜色、字体、切角、间距和动效集中在这里；两个程序共用。
+// 拉丁字体 Saira（SIL OFL 1.1）已切成静态实例，许可证见 fonts/Saira-OFL.txt。
+
 #include <QColor>
+#include <QEasingCurve>
 #include <QFont>
-#include <QPalette>
+#include <QPainterPath>
+#include <QRectF>
+#include <QString>
+#include <QStringList>
+#include <QVector>
 
-// 统一浅色主题：避免 Windows 深色模式导致表格/日志黑底黑字。
-inline void applyAppTheme(QApplication& app) {
-    app.setStyle(QStringLiteral("Fusion"));
+class QApplication;
+class QLabel;
+class QPainter;
+class QWidget;
 
-    QPalette pal = app.palette();
-    pal.setColor(QPalette::Window, QColor(0xF5, 0xF7, 0xFA));
-    pal.setColor(QPalette::WindowText, QColor(0x1F, 0x2A, 0x37));
-    pal.setColor(QPalette::Base, QColor(0xFF, 0xFF, 0xFF));
-    pal.setColor(QPalette::AlternateBase, QColor(0xF3, 0xF6, 0xFA));
-    pal.setColor(QPalette::Text, QColor(0x1F, 0x2A, 0x37));
-    pal.setColor(QPalette::Button, QColor(0xFF, 0xFF, 0xFF));
-    pal.setColor(QPalette::ButtonText, QColor(0x1F, 0x2A, 0x37));
-    pal.setColor(QPalette::Highlight, QColor(0x2F, 0x80, 0xED));
-    pal.setColor(QPalette::HighlightedText, QColor(0xFF, 0xFF, 0xFF));
-    pal.setColor(QPalette::ToolTipBase, QColor(0xFF, 0xFF, 0xFF));
-    pal.setColor(QPalette::ToolTipText, QColor(0x1F, 0x2A, 0x37));
-    app.setPalette(pal);
+namespace ef {
 
-    app.setStyleSheet(QStringLiteral(R"(
-QGroupBox {
-    background-color: #FFFFFF;
-    border: 1px solid #DCE3EC;
-    border-radius: 8px;
-    margin-top: 12px;
-    padding-top: 6px;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    left: 12px;
-    padding: 0 4px;
-    color: #334155;
-    font-weight: 600;
-}
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit,
-QListWidget, QTableWidget {
-    background-color: #FFFFFF;
-    color: #1F2A37;
-    border: 1px solid #CBD5E1;
-    border-radius: 4px;
-    selection-background-color: #2F80ED;
-    selection-color: #FFFFFF;
-}
-QPushButton {
-    background-color: #2F80ED;
-    color: #FFFFFF;
-    border: none;
-    border-radius: 5px;
-    padding: 6px 10px;
-}
-QPushButton:hover { background-color: #2563EB; }
-QPushButton:pressed { background-color: #1D4ED8; }
-QHeaderView::section {
-    background-color: #EEF2F7;
-    color: #334155;
-    border: none;
-    padding: 4px;
-}
-QTableWidget { gridline-color: #E2E8F0; }
-QStatusBar { background-color: #EEF2F7; color: #334155; }
-QScrollBar:vertical { background: #F1F5F9; width: 10px; }
-QScrollBar::handle:vertical { background: #CBD5E1; border-radius: 5px; }
-)"));
-}
+enum class Mode { Light, Dark };
+
+struct Palette {
+    QColor paper;
+    QColor panel;
+    QColor ink;
+    QColor ink2;
+    QColor rule;
+    QColor chip;
+    QColor signal;
+    QColor onSignal;
+    QColor trace;
+    QColor tagBg;
+    QColor tagFg;
+    QColor danger;
+    QColor commandBar;
+    QColor commandBarText;
+    QColor commandBarMuted;
+    QColor commandBarRule;
+    QColor triA;
+    QColor triB;
+    QColor triC;
+};
+
+enum class FontRole {
+    Eyebrow,   // 宽体大写英文小字
+    Field,     // 字段、编号、计数
+    Label,     // 中文/英文界面标签
+    Body,      // 正文
+    Heading,   // 面板标题
+    Display,   // 大字标
+    Button,    // 按钮文字
+    Numeral,   // 大数字
+    Small      // 说明、图例
+};
+
+const Palette& palette();
+bool isDark();
+void setDark(bool dark);
+void toggleMode();
+
+// 加载字体、设置调色板和全局样式表；两个 main() 在创建窗口前调用一次。
+void apply(QApplication& app);
+
+// 重新绘制所有控件（主题切换后调用）。
+void repaintAll();
+
+QFont font(FontRole role);
+QString fields(const QStringList& parts);
+
+QLabel* makeEyebrow(const QString& text, QWidget* parent = nullptr);
+QLabel* makeTitle(const QString& text, QWidget* parent = nullptr);
+QLabel* makeField(const QString& text, QWidget* parent = nullptr);
+QLabel* makeHint(const QString& text, QWidget* parent = nullptr);
+
+QPainterPath cutPath(const QRectF& rect, qreal cut);
+void drawCutRect(QPainter& p, const QRectF& rect, qreal cut, const QBrush& fill,
+                 const QPen& pen);
+void drawHatch(QPainter& p, const QRectF& rect, const QColor& ink, qreal opacity = 0.22,
+               qreal period = 6.5);
+void drawContours(QPainter& p, const QRectF& rect, const QColor& ink,
+                  qreal opacity = 0.09);
+void drawTriStrip(QPainter& p, const QRectF& rect);
+
+QEasingCurve easingSnap();
+QEasingCurve easingMech();
+bool reduceMotion();
+
+// 与 tokens.json 对应的常用时长。
+constexpr int kPressMs = 100;
+constexpr int kWipeMs = 280;
+constexpr int kExitMs = 180;
+constexpr int kTabMs = 400;
+constexpr int kRowMs = 200;
+
+}  // namespace ef

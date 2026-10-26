@@ -11,7 +11,6 @@ class QTimer;
 
 // 题 2 的场景画布：主通道（栈）、临时区（栈）、三条优先级队列。
 class YardCanvas : public QWidget {
-    Q_OBJECT
 public:
     explicit YardCanvas(QWidget* parent = nullptr);
 
@@ -25,13 +24,15 @@ protected:
 
 private:
     QPointF targetFor(int index) const;
-    int channelX() const { return 294; }
-    int channelY() const { return 96; }
-    int slotH() const { return 54; }
-    int gap() const { return 8; }
+    int verticalShift() const;
+    int channelX() const { return 248; }
+    int channelY() const { return 50 + verticalShift(); }
+    int slotH() const { return 44; }
+    int gap() const { return 6; }
     int slotW() const;
-    int tempY() const { return channelY() + slotH() + 80; }
-    int laneY(int type) const { return 250 + type * 100; }
+    int tempY() const { return 140 + verticalShift(); }
+    int laneY(int type) const { return 190 + verticalShift() + type * 74; }
+    int laneH() const { return 70; }
     void paintTruck(QPainter& p, const QPointF& pos, const ds::Truck& t, bool small);
 
     ds::TruckYard* m_yard = nullptr;

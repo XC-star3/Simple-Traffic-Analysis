@@ -1,14 +1,16 @@
 #include "main_window.h"
 
 #include <QAbstractItemView>
-#include <QColor>
+#include <QApplication>
+#include <QBrush>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
-#include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFont>
 #include <QFormLayout>
-#include <QGroupBox>
+#include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -17,16 +19,18 @@
 #include <QListWidgetItem>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStatusBar>
-#include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTimer>
 #include <QVBoxLayout>
 
-#include <cstring>
-
+#include "common/theme.h"
+#include "common/widgets.h"
 #include "map_canvas.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -39,169 +43,326 @@ void MainWindow::runDemo() {
         loadDemo();
     }
     m_mode->setCurrentIndex(0);
-    for (int i = 0; i < m_targets->count(); ++i) {
-        QListWidgetItem* item = m_targets->item(i);
-        const int id = item->data(Qt::UserRole).toInt();
-        item->setCheckState((id == 3 || id == 5 || id == 7) ? Qt::Checked : Qt::Unchecked);
+    {
+        const QSignalBlocker blocker(m_targets);
+        for (int i = 0; i < m_targets->count(); ++i) {
+            QListWidgetItem* item = m_targets->item(i);
+            const int id = item->data(Qt::UserRole).toInt();
+            item->setCheckState((id == 3 || id == 5 || id == 7) ? Qt::Checked
+                                                                : Qt::Unchecked);
+        }
     }
+    updateTargetStyles();
+    updateSelectionView();
+    updateMetrics();
     planRoute();
     simulateDispatch();
 }
 
 void MainWindow::buildUi() {
-    setWindowTitle("城市公共自行车调度路径规划系统");
-    resize(1600, 940);
+    setWindowTitle("城市公共自行车 / 调度台");
+    resize(1440, 900);
+    setMinimumSize(1200, 760);
 
     auto* central = new QWidget(this);
     setCentralWidget(central);
-    auto* root = new QHBoxLayout(central);
-    root->setContentsMargins(12, 12, 12, 12);
-    root->setSpacing(12);
+    auto* root = new QVBoxLayout(central);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+
+    root->addWidget(new ef::EfTriStrip(central));
+    m_bar = new ef::EfCommandBar(QStringLiteral("B"), QStringLiteral("CYCLE"),
+                                 QStringLiteral("公共自行车"), QStringLiteral("DISPATCH"),
+                                 QStringLiteral("调度台"), central);
+    root->addWidget(m_bar);
+
+    auto* content = new QWidget(central);
+    auto* columns = new QHBoxLayout(content);
+    columns->setContentsMargins(14, 14, 14, 14);
+    columns->setSpacing(12);
+    root->addWidget(content, 1);
 
     // ---------------- 左侧 ----------------
     auto* left = new QWidget;
-    left->setFixedWidth(330);
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(10);
+    leftLayout->setSpacing(8);
 
-    auto* dataGroup = new QGroupBox("路网数据");
-    auto* dataLayout = new QVBoxLayout(dataGroup);
-    auto* loadButton = new QPushButton("加载示例地图");
-    auto* clearButton = new QPushButton("清空路网");
-    auto* addStationButton = new QPushButton("新增站点");
-    auto* addRoadButton = new QPushButton("新增道路");
-    dataLayout->addWidget(loadButton);
-    dataLayout->addWidget(clearButton);
-    dataLayout->addWidget(addStationButton);
-    dataLayout->addWidget(addRoadButton);
-    leftLayout->addWidget(dataGroup);
+    auto* data = new ef::EfPanel(QStringLiteral("NETWORK"), QStringLiteral("路网数据"));
+    auto* dataGrid = new QGridLayout;
+    dataGrid->setContentsMargins(0, 0, 0, 0);
+    dataGrid->setSpacing(6);
+    auto* loadButton =
+        new ef::EfButton(QStringLiteral("加载示例地图"), ef::EfButton::Variant::Primary);
+    auto* clearButton =
+        new ef::EfButton(QStringLiteral("清空路网"), ef::EfButton::Variant::Danger);
+    auto* addStationButton =
+        new ef::EfButton(QStringLiteral("新增站点"), ef::EfButton::Variant::Secondary);
+    auto* addRoadButton =
+        new ef::EfButton(QStringLiteral("新增道路"), ef::EfButton::Variant::Secondary);
+    loadButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    clearButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    addStationButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    addRoadButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    dataGrid->addWidget(loadButton, 0, 0);
+    dataGrid->addWidget(clearButton, 0, 1);
+    dataGrid->addWidget(addStationButton, 1, 0);
+    dataGrid->addWidget(addRoadButton, 1, 1);
+    data->body()->addLayout(dataGrid);
+    leftLayout->addWidget(data);
 
-    auto* searchGroup = new QGroupBox("最短路径 / 调度目标");
-    auto* searchForm = new QFormLayout(searchGroup);
+    auto* search = new ef::EfPanel(QStringLiteral("ROUTE"),
+                                   QStringLiteral("最短路径 / 调度目标"));
+    auto* searchForm = new QFormLayout;
+    searchForm->setContentsMargins(0, 0, 0, 0);
+    searchForm->setHorizontalSpacing(10);
+    searchForm->setVerticalSpacing(6);
     m_mode = new QComboBox;
-    m_mode->addItem("按距离最短");
-    m_mode->addItem("按耗时最少");
+    m_mode->addItem(QStringLiteral("按距离最短"));
+    m_mode->addItem(QStringLiteral("按耗时最少"));
     m_source = new QComboBox;
     m_dest = new QComboBox;
-    searchForm->addRow("权重模式", m_mode);
-    searchForm->addRow("调度总站", m_source);
-    searchForm->addRow("查询终点", m_dest);
-    m_targets = new QListWidget;
-    m_targets->setMinimumHeight(150);
-    searchForm->addRow("目标站点", m_targets);
-    auto* planButton = new QPushButton("规划调度路线");
-    searchForm->addRow(planButton);
-    auto* queryButton = new QPushButton("查询两点最优路线");
-    searchForm->addRow(queryButton);
-    leftLayout->addWidget(searchGroup);
+    searchForm->addRow(QStringLiteral("权重模式"), m_mode);
+    searchForm->addRow(QStringLiteral("调度总站"), m_source);
+    searchForm->addRow(QStringLiteral("查询终点"), m_dest);
+    search->body()->addLayout(searchForm);
+    auto* targetLabel = ef::makeEyebrow(QStringLiteral("TARGETS"), search);
+    search->body()->addWidget(targetLabel);
+    m_targets = new QListWidget(search);
+    m_targets->setMinimumHeight(130);
+    m_targets->setMaximumHeight(150);
+    m_targets->setSelectionMode(QAbstractItemView::NoSelection);
+    m_targets->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_targets->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_targets->setUniformItemSizes(true);
+    m_targets->setFont(ef::font(ef::FontRole::Field));
+    m_targets->setItemDelegate(new ef::EfListDelegate(m_targets));
+    m_targets->setAccessibleName(QStringLiteral("调度目标站点"));
+    search->body()->addWidget(m_targets);
+    auto* planButton =
+        new ef::EfButton(QStringLiteral("规划调度路线"), ef::EfButton::Variant::Primary);
+    planButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    search->body()->addWidget(planButton);
+    auto* queryButton = new ef::EfButton(QStringLiteral("查询两点最优路线"),
+                                         ef::EfButton::Variant::Secondary);
+    queryButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    search->body()->addWidget(queryButton);
+    leftLayout->addWidget(search);
 
-    auto* simGroup = new QGroupBox("调度仿真");
-    auto* simForm = new QFormLayout(simGroup);
+    auto* sim = new ef::EfPanel(QStringLiteral("SIMULATION"), QStringLiteral("调度仿真"));
+    auto* simForm = new QFormLayout;
+    simForm->setContentsMargins(0, 0, 0, 0);
+    simForm->setHorizontalSpacing(10);
+    simForm->setVerticalSpacing(6);
     m_truckCapacity = new QSpinBox;
     m_truckCapacity->setRange(1, 40);
     m_truckCapacity->setValue(8);
-    m_truckCapacity->setSuffix(" 辆");
+    m_truckCapacity->setSuffix(QStringLiteral(" 辆"));
     m_lowPercent = new QSpinBox;
     m_lowPercent->setRange(0, 50);
     m_lowPercent->setValue(20);
-    m_lowPercent->setSuffix(" %");
+    m_lowPercent->setSuffix(QStringLiteral(" %"));
+    m_lowPercent->setFixedWidth(64);
     m_highPercent = new QSpinBox;
     m_highPercent->setRange(50, 100);
     m_highPercent->setValue(80);
-    m_highPercent->setSuffix(" %");
-    simForm->addRow("调度车载量", m_truckCapacity);
-    simForm->addRow("低库存阈值", m_lowPercent);
-    simForm->addRow("高库存阈值", m_highPercent);
-    auto* simulateButton = new QPushButton("开始调度模拟");
-    simForm->addRow(simulateButton);
-    leftLayout->addWidget(simGroup);
+    m_highPercent->setSuffix(QStringLiteral(" %"));
+    m_highPercent->setFixedWidth(64);
+    simForm->addRow(QStringLiteral("调度车载量"), m_truckCapacity);
+    sim->body()->addLayout(simForm);
+    auto* thresholdRow = new QHBoxLayout;
+    thresholdRow->setContentsMargins(0, 0, 0, 0);
+    thresholdRow->setSpacing(6);
+    thresholdRow->addWidget(ef::makeField(QStringLiteral("下限"), sim));
+    thresholdRow->addWidget(m_lowPercent);
+    thresholdRow->addWidget(ef::makeField(QStringLiteral("上限"), sim));
+    thresholdRow->addWidget(m_highPercent);
+    thresholdRow->addStretch(1);
+    sim->body()->addLayout(thresholdRow);
+    auto* simulateButton =
+        new ef::EfButton(QStringLiteral("开始调度模拟"), ef::EfButton::Variant::Primary);
+    simulateButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    sim->body()->addWidget(simulateButton);
+    leftLayout->addWidget(sim);
+    leftLayout->addStretch(1);
 
-    auto* blockGroup = new QGroupBox("道路阻断");
-    auto* blockLayout = new QVBoxLayout(blockGroup);
-    m_edge = new QComboBox;
-    blockLayout->addWidget(m_edge);
-    auto* blockRow = new QHBoxLayout;
-    auto* blockButton = new QPushButton("阻断");
-    auto* restoreButton = new QPushButton("恢复");
-    blockRow->addWidget(blockButton);
-    blockRow->addWidget(restoreButton);
-    blockLayout->addLayout(blockRow);
-    auto* reachButton = new QPushButton("检查目标可达性");
-    blockLayout->addWidget(reachButton);
-    leftLayout->addWidget(blockGroup);
-    leftLayout->addStretch();
-
-    root->addWidget(left);
+    auto* leftScroll = new QScrollArea;
+    leftScroll->setWidgetResizable(true);
+    leftScroll->setFrameShape(QFrame::NoFrame);
+    leftScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    leftScroll->setWidget(left);
+    leftScroll->setFixedWidth(300);
+    columns->addWidget(leftScroll);
 
     // ---------------- 中间 ----------------
     auto* center = new QWidget;
+    center->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto* centerLayout = new QVBoxLayout(center);
     centerLayout->setContentsMargins(0, 0, 0, 0);
-    m_summary = new QLabel("尚未加载数据");
-    m_summary->setStyleSheet("font-size:13px;color:#374151;font-weight:600;");
-    m_canvas = new MapCanvas;
+    centerLayout->setSpacing(10);
+
+    auto* metricsPanel =
+        new ef::EfPanel(QStringLiteral("DISPATCH"), QStringLiteral("调度态势"));
+    m_metrics = new ef::EfMetrics(4, metricsPanel);
+    metricsPanel->body()->addWidget(m_metrics);
+    m_contextFields = ef::makeField(QStringLiteral("权重 —  │  总站 —  │  目标 0"),
+                                    metricsPanel);
+    metricsPanel->body()->addWidget(m_contextFields);
+    centerLayout->addWidget(metricsPanel);
+
+    auto* mapPanel =
+        new ef::EfPanel(QStringLiteral("NETWORK MAP"), QStringLiteral("校园路网"));
+    m_canvas = new MapCanvas(mapPanel);
     m_canvas->setSystem(&m_system);
-    centerLayout->addWidget(m_summary);
-    centerLayout->addWidget(m_canvas, 1);
-    root->addWidget(center, 1);
+    m_canvas->setAccessibleName(QStringLiteral("校园路网站点与调度路线"));
+    m_canvas->setMinimumSize(480, 300);
+    mapPanel->body()->setContentsMargins(0, 0, 0, 0);
+    mapPanel->body()->addWidget(m_canvas, 1);
+    centerLayout->addWidget(mapPanel, 1);
+
+    auto* block = new ef::EfPanel(QStringLiteral("ROAD BLOCK"), QStringLiteral("道路阻断"));
+    m_edge = new QComboBox(block);
+    m_edge->setAccessibleName(QStringLiteral("道路"));
+    m_edge->setFont(ef::font(ef::FontRole::Field));
+    m_edge->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto* blockRow = new QHBoxLayout;
+    blockRow->setContentsMargins(0, 0, 0, 0);
+    blockRow->setSpacing(6);
+    auto* blockButton =
+        new ef::EfButton(QStringLiteral("阻断"), ef::EfButton::Variant::Secondary);
+    auto* restoreButton =
+        new ef::EfButton(QStringLiteral("恢复"), ef::EfButton::Variant::Secondary);
+    auto* reachButton = new ef::EfButton(QStringLiteral("检查目标可达性"),
+                                         ef::EfButton::Variant::Secondary);
+    blockButton->setFixedWidth(64);
+    restoreButton->setFixedWidth(64);
+    reachButton->setFixedWidth(126);
+    m_showWeights = new QCheckBox(QStringLiteral("权重"), block);
+    m_showWeights->setToolTip(QStringLiteral("在画布上显示道路距离和耗时"));
+    blockRow->addWidget(m_edge, 1);
+    blockRow->addWidget(m_showWeights);
+    blockRow->addWidget(blockButton);
+    blockRow->addWidget(restoreButton);
+    blockRow->addWidget(reachButton);
+    block->body()->addLayout(blockRow);
+    centerLayout->addWidget(block);
+    columns->addWidget(center, 1);
 
     // ---------------- 右侧 ----------------
     auto* right = new QWidget;
-    right->setFixedWidth(430);
+    right->setFixedWidth(360);
     auto* rightLayout = new QVBoxLayout(right);
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(10);
 
-    auto* stationGroup = new QGroupBox("站点状态");
-    auto* stationLayout = new QVBoxLayout(stationGroup);
-    m_stationTable = new QTableWidget(0, 5);
-    m_stationTable->setHorizontalHeaderLabels({"编号", "名称", "现有", "容量", "状态"});
+    auto* stationPanel =
+        new ef::EfPanel(QStringLiteral("STATIONS"), QStringLiteral("站点状态"));
+    m_stationTable = new QTableWidget(0, 5, stationPanel);
+    m_stationTable->setAccessibleName(QStringLiteral("站点状态"));
+    m_stationTable->setHorizontalHeaderLabels(
+        {QStringLiteral("编号"), QStringLiteral("名称"), QStringLiteral("现有"),
+         QStringLiteral("容量"), QStringLiteral("状态")});
     m_stationTable->horizontalHeader()->setStretchLastSection(false);
-    m_stationTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_stationTable->setColumnWidth(0, 44);
-    m_stationTable->setColumnWidth(2, 50);
-    m_stationTable->setColumnWidth(3, 50);
-    m_stationTable->setColumnWidth(4, 56);
+    m_stationTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_stationTable->horizontalHeader()->setMinimumSectionSize(36);
+    m_stationTable->horizontalHeader()->setFont(ef::font(ef::FontRole::Eyebrow));
     m_stationTable->verticalHeader()->setVisible(false);
-    m_stationTable->verticalHeader()->setDefaultSectionSize(26);
+    m_stationTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_stationTable->verticalHeader()->setDefaultSectionSize(22);
     m_stationTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_stationTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_stationTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    stationLayout->addWidget(m_stationTable);
-    rightLayout->addWidget(stationGroup, 1);
+    m_stationTable->setSelectionMode(QAbstractItemView::NoSelection);
+    m_stationTable->setFocusPolicy(Qt::NoFocus);
+    m_stationTable->setAlternatingRowColors(false);
+    m_stationTable->setMinimumHeight(260);
+    stationPanel->body()->addWidget(m_stationTable, 1);
+    rightLayout->addWidget(stationPanel, 5);
 
-    auto* routeGroup = new QGroupBox("路线与调度结果");
-    auto* routeLayout = new QVBoxLayout(routeGroup);
-    m_routeText = new QPlainTextEdit;
+    auto* routePanel =
+        new ef::EfPanel(QStringLiteral("RESULT"), QStringLiteral("路线与调度结果"));
+    m_routeText = new QPlainTextEdit(routePanel);
+    m_routeText->setAccessibleName(QStringLiteral("路线与调度结果"));
     m_routeText->setReadOnly(true);
-    m_routeText->setMaximumBlockCount(300);
-    m_routeText->setFont(QFont("Consolas", 9));
-    routeLayout->addWidget(m_routeText);
-    rightLayout->addWidget(routeGroup, 1);
+    m_routeText->setMaximumBlockCount(420);
+    m_routeText->setFont(ef::font(ef::FontRole::Body));
+    m_routeText->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    m_routeText->setPlaceholderText(
+        QStringLiteral("// PLAN\n选择目标站点后点击“规划调度路线”，路线与调度记录会显示在这里。"));
+    routePanel->body()->addWidget(m_routeText, 1);
+    rightLayout->addWidget(routePanel, 3);
 
-    auto* alertGroup = new QGroupBox("告警");
-    auto* alertLayout = new QVBoxLayout(alertGroup);
-    m_alerts = new QListWidget;
-    alertLayout->addWidget(m_alerts);
-    rightLayout->addWidget(alertGroup);
+    auto* alertPanel =
+        new ef::EfPanel(QStringLiteral("ALERTS"), QStringLiteral("调度告警"));
+    m_alerts = new QListWidget(alertPanel);
+    m_alerts->setSelectionMode(QAbstractItemView::NoSelection);
+    m_alerts->setFocusPolicy(Qt::NoFocus);
+    m_alerts->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_alerts->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_alerts->setUniformItemSizes(true);
+    m_alerts->setMinimumHeight(40);
+    m_alerts->setFont(ef::font(ef::FontRole::Field));
+    m_alerts->setItemDelegate(new ef::EfListDelegate(m_alerts));
+    m_alerts->setAccessibleName(QStringLiteral("调度告警"));
+    alertPanel->body()->addWidget(m_alerts, 1);
+    rightLayout->addWidget(alertPanel, 1);
+    columns->addWidget(right);
 
-    root->addWidget(right);
-
+    // ---------------- 连接 ----------------
     connect(loadButton, &QPushButton::clicked, this, [this]() { loadDemo(); });
-    connect(clearButton, &QPushButton::clicked, this, [this]() { clearAll(); });
-    connect(addStationButton, &QPushButton::clicked, this, [this]() { addStationDialog(); });
+    connect(clearButton, &QPushButton::clicked, this, [this]() { confirmClearAll(); });
+    connect(addStationButton, &QPushButton::clicked, this,
+            [this]() { addStationDialog(); });
     connect(addRoadButton, &QPushButton::clicked, this, [this]() { addRoadDialog(); });
     connect(planButton, &QPushButton::clicked, this, [this]() { planRoute(); });
     connect(queryButton, &QPushButton::clicked, this, [this]() { queryPair(); });
-    connect(simulateButton, &QPushButton::clicked, this, [this]() { simulateDispatch(); });
+    connect(simulateButton, &QPushButton::clicked, this,
+            [this]() { simulateDispatch(); });
     connect(blockButton, &QPushButton::clicked, this, [this]() { blockSelected(); });
-    connect(restoreButton, &QPushButton::clicked, this, [this]() { restoreSelected(); });
-    connect(reachButton, &QPushButton::clicked, this, [this]() { checkReachability(); });
-    connect(m_canvas, &MapCanvas::stationClicked, this, [this](int id) {
+    connect(restoreButton, &QPushButton::clicked, this,
+            [this]() { restoreSelected(); });
+    connect(reachButton, &QPushButton::clicked, this,
+            [this]() { checkReachability(); });
+    connect(m_showWeights, &QCheckBox::toggled, this, [this](bool checked) {
+        m_canvas->setShowWeights(checked);
+    });
+    connect(m_edge, &QComboBox::currentIndexChanged, this,
+            [this]() { m_edge->setToolTip(m_edge->currentText()); });
+    connect(m_bar->themeButton(), &QPushButton::clicked, this,
+            [this]() { toggleTheme(); });
+    connect(m_targets, &QListWidget::itemChanged, this, [this]() {
+        updateTargetStyles();
+        invalidateRoute(QStringLiteral("目标站点已更改，请重新规划路线。"));
+        updateSelectionView();
+        updateMetrics();
+    });
+    connect(m_mode, &QComboBox::currentIndexChanged, this, [this]() {
+        invalidateRoute(QStringLiteral("权重模式已更改，请重新规划路线。"));
+        updateSelectionView();
+        updateMetrics();
+    });
+    connect(m_source, &QComboBox::currentIndexChanged, this, [this]() {
+        invalidateRoute(QStringLiteral("调度总站已更改，请重新规划路线。"));
+        updateSelectionView();
+        updateMetrics();
+    });
+    connect(m_lowPercent, &QSpinBox::valueChanged, this, [this]() {
+        refreshStations();
+        m_canvas->setThresholds(m_lowPercent->value(), m_highPercent->value());
+        updateMetrics();
+    });
+    connect(m_highPercent, &QSpinBox::valueChanged, this, [this]() {
+        refreshStations();
+        m_canvas->setThresholds(m_lowPercent->value(), m_highPercent->value());
+        updateMetrics();
+    });
+    m_canvas->setStationClickedHandler([this](int id) {
         const int idx = m_source->findData(id);
         if (idx >= 0) {
             m_source->setCurrentIndex(idx);
+            m_canvas->setDepot(id);
+            updateSelectionView();
+            updateMetrics();
             setStatus(QString("已选择总站：%1").arg(stationLabel(id)));
         }
     });
@@ -210,7 +371,15 @@ void MainWindow::buildUi() {
     m_truckTimer->setInterval(30);
     connect(m_truckTimer, &QTimer::timeout, this, [this]() { animateTruck(); });
 
-    statusBar()->showMessage("就绪");
+    statusBar()->setSizeGripEnabled(false);
+    auto* ready = new QLabel(QStringLiteral("// READY"), this);
+    ready->setObjectName(QStringLiteral("efEyebrow"));
+    ready->setFont(ef::font(ef::FontRole::Eyebrow));
+    statusBar()->addPermanentWidget(ready);
+    statusBar()->showMessage(QStringLiteral("就绪"));
+
+    central->setFocusPolicy(Qt::StrongFocus);
+    central->setFocus(Qt::OtherFocusReason);
 }
 
 void MainWindow::loadDemo() {
@@ -244,7 +413,8 @@ void MainWindow::loadDemo() {
     };
     char err[160] = {0};
     for (const auto& s : stations) {
-        m_system.addStation(s.id, s.name, s.bikes, s.capacity, s.x, s.y, err, sizeof(err));
+        m_system.addStation(s.id, s.name, s.bikes, s.capacity, s.x, s.y, err,
+                            sizeof(err));
     }
 
     struct RoadData {
@@ -278,7 +448,73 @@ void MainWindow::loadDemo() {
     if (dest >= 0) {
         m_dest->setCurrentIndex(dest);
     }
-    setStatus("示例地图已加载：10 个站点、15 条道路");
+    m_canvas->setDepot(m_source->currentData().toInt());
+    m_canvas->setThresholds(m_lowPercent->value(), m_highPercent->value());
+    updateSelectionView();
+    updateMetrics();
+    setStatus(QStringLiteral("示例地图已加载：10 个站点、15 条道路"));
+}
+
+void MainWindow::invalidateRoute(const QString& reason) {
+    const bool hadRoute = !m_tour.isEmpty() || !m_path.isEmpty();
+    m_truckTimer->stop();
+    m_tour.clear();
+    m_path.clear();
+    if (m_canvas != nullptr) {
+        m_canvas->clearPath();
+        m_canvas->setTruckProgress(-1.0);
+    }
+    if (hadRoute && m_routeText != nullptr) {
+        m_routeText->appendPlainText(QString("\n// ROUTE INVALID\n%1").arg(reason));
+        m_routeText->verticalScrollBar()->setValue(
+            m_routeText->verticalScrollBar()->maximum());
+        setStatus(reason);
+    }
+}
+
+void MainWindow::confirmClearAll() {
+    if (m_system.stationCount() == 0) {
+        setStatus(QStringLiteral("路网已经是空的"));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("清空路网"));
+    dialog.setMinimumWidth(430);
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(18, 16, 18, 16);
+    layout->setSpacing(10);
+    layout->addWidget(ef::makeEyebrow(QStringLiteral("CLEAR NETWORK"), &dialog));
+    layout->addWidget(ef::makeTitle(QStringLiteral("清空路网"), &dialog));
+    layout->addWidget(ef::makeRule(&dialog));
+    auto* body = new QLabel(
+        QString("将删除 %1 个站点和 %2 条道路，无法撤销。")
+            .arg(m_system.stationCount())
+            .arg(m_system.roads().size()),
+        &dialog);
+    body->setWordWrap(true);
+    body->setFont(ef::font(ef::FontRole::Body));
+    layout->addWidget(body);
+
+    auto* actions = new QHBoxLayout;
+    actions->addStretch(1);
+    auto* cancel = new ef::EfButton(QStringLiteral("取消"), ef::EfButton::Variant::Secondary,
+                                    &dialog);
+    auto* clear = new ef::EfButton(QStringLiteral("清空"), ef::EfButton::Variant::Danger,
+                                   &dialog);
+    actions->addWidget(cancel);
+    actions->addWidget(clear);
+    layout->addLayout(actions);
+
+    connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(clear, &QPushButton::clicked, &dialog, &QDialog::accept);
+    cancel->setDefault(true);
+    clear->setAutoDefault(false);
+    cancel->setFocus(Qt::OtherFocusReason);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        clearAll();
+    }
 }
 
 void MainWindow::clearAll() {
@@ -286,16 +522,26 @@ void MainWindow::clearAll() {
     m_truckTimer->stop();
     m_tour.clear();
     m_path.clear();
+    m_canvas->setSystem(&m_system);
     m_canvas->clearPath();
     m_source->clear();
     m_dest->clear();
     m_targets->clear();
-    m_edge->clear();
+    auto* emptyTarget = new QListWidgetItem(
+        QStringLiteral("// 路网为空。先加载示例地图，或新增站点。"));
+    emptyTarget->setFlags(Qt::NoItemFlags);
+    emptyTarget->setForeground(QBrush(ef::palette().ink2));
+    emptyTarget->setFont(ef::font(ef::FontRole::Field));
+    m_targets->addItem(emptyTarget);
     m_stationTable->setRowCount(0);
     m_routeText->clear();
     m_alerts->clear();
-    m_summary->setText("尚未加载数据");
-    setStatus("路网已清空");
+    m_contextFields->setText(QStringLiteral("权重 —  │  总站 —  │  目标 0"));
+    refreshEdges();
+    refreshAlerts();
+    updateSelectionView();
+    updateMetrics();
+    setStatus(QStringLiteral("路网已清空"));
 }
 
 void MainWindow::refreshAll() {
@@ -303,62 +549,184 @@ void MainWindow::refreshAll() {
     refreshStations();
     refreshEdges();
     refreshAlerts();
+    updateTargetStyles();
+    updateSelectionView();
+    updateMetrics();
+    m_canvas->setThresholds(m_lowPercent->value(), m_highPercent->value());
     m_canvas->update();
-    m_summary->setText(QString("站点 %1 个 · 道路 %2 条 · 告警 %3 条")
-                           .arg(m_system.stationCount())
-                           .arg(m_system.roads().size())
-                           .arg(m_system.alerts().size()));
 }
 
 void MainWindow::refreshSources() {
     const int current = m_source->currentData().isValid() ? m_source->currentData().toInt() : -1;
     const int destCurrent = m_dest->currentData().isValid() ? m_dest->currentData().toInt() : -1;
-    m_source->clear();
-    m_dest->clear();
-    for (int i = 0; i < m_system.stationCount(); ++i) {
-        const ds::Station& s = m_system.stationAt(i);
-        const QString label = QString("%1 %2").arg(s.id).arg(QString::fromUtf8(s.name));
-        m_source->addItem(label, s.id);
-        m_dest->addItem(label, s.id);
-    }
-    if (current >= 0) {
-        const int idx = m_source->findData(current);
-        if (idx >= 0) {
-            m_source->setCurrentIndex(idx);
+    {
+        const QSignalBlocker blockerSource(m_source);
+        const QSignalBlocker blockerDest(m_dest);
+        m_source->clear();
+        m_dest->clear();
+        for (int i = 0; i < m_system.stationCount(); ++i) {
+            const ds::Station& s = m_system.stationAt(i);
+            const QString label = QString("%1 %2").arg(s.id).arg(QString::fromUtf8(s.name));
+            m_source->addItem(label, s.id);
+            m_dest->addItem(label, s.id);
         }
-    }
-    if (destCurrent >= 0) {
-        const int idx = m_dest->findData(destCurrent);
-        if (idx >= 0) {
-            m_dest->setCurrentIndex(idx);
+        if (current >= 0) {
+            const int idx = m_source->findData(current);
+            if (idx >= 0) {
+                m_source->setCurrentIndex(idx);
+            }
+        }
+        if (destCurrent >= 0) {
+            const int idx = m_dest->findData(destCurrent);
+            if (idx >= 0) {
+                m_dest->setCurrentIndex(idx);
+            }
         }
     }
 }
 
 void MainWindow::rebuildTargets() {
     QVector<int> previous;
+    bool hadItems = false;
     for (int i = 0; i < m_targets->count(); ++i) {
         const QListWidgetItem* item = m_targets->item(i);
+        if (!item->data(Qt::UserRole).isValid()) {
+            continue;  // 跳过“路网为空”的占位行
+        }
+        hadItems = true;
         if (item->checkState() == Qt::Checked) {
             previous.push_back(item->data(Qt::UserRole).toInt());
         }
     }
-    const bool hadItems = m_targets->count() > 0;
 
-    m_targets->clear();
-    for (int i = 0; i < m_system.stationCount(); ++i) {
-        const ds::Station& s = m_system.stationAt(i);
-        auto* item = new QListWidgetItem(QString("%1 %2").arg(s.id).arg(QString::fromUtf8(s.name)));
-        item->setData(Qt::UserRole, s.id);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        bool checked = false;
-        if (hadItems) {
-            checked = previous.contains(s.id);
-        } else {
-            checked = (s.id == 3 || s.id == 5 || s.id == 7);
+    {
+        const QSignalBlocker blocker(m_targets);
+        m_targets->clear();
+        for (int i = 0; i < m_system.stationCount(); ++i) {
+            const ds::Station& s = m_system.stationAt(i);
+            auto* item = new QListWidgetItem(
+                QString("%1 %2").arg(s.id).arg(QString::fromUtf8(s.name)));
+            item->setData(Qt::UserRole, s.id);
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+            const bool checked = hadItems ? previous.contains(s.id)
+                                          : (s.id == 3 || s.id == 5 || s.id == 7);
+            item->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
+            item->setFont(ef::font(ef::FontRole::Field));
+            m_targets->addItem(item);
         }
-        item->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
-        m_targets->addItem(item);
+    }
+    updateTargetStyles();
+    updateSelectionView();
+}
+
+void MainWindow::updateTargetStyles() {
+    const QSignalBlocker blocker(m_targets);
+    for (int i = 0; i < m_targets->count(); ++i) {
+        QListWidgetItem* item = m_targets->item(i);
+        if (!item->data(Qt::UserRole).isValid()) {
+            item->setForeground(QBrush(ef::palette().ink2));
+            continue;
+        }
+        const bool checked = item->checkState() == Qt::Checked;
+        QFont f = ef::font(ef::FontRole::Field);
+        f.setWeight(checked ? QFont::DemiBold : QFont::Normal);
+        item->setFont(f);
+    }
+    m_targets->viewport()->update();
+}
+
+void MainWindow::updateSelectionView() {
+    const int depot =
+        m_source->currentData().isValid() ? m_source->currentData().toInt() : -1;
+    {
+        const QSignalBlocker blocker(m_targets);
+        for (int i = 0; i < m_targets->count(); ++i) {
+            QListWidgetItem* item = m_targets->item(i);
+            if (!item->data(Qt::UserRole).isValid()) {
+                continue;
+            }
+            const bool isDepot = item->data(Qt::UserRole).toInt() == depot;
+            Qt::ItemFlags flags = item->flags();
+            if (isDepot) {
+                flags &= ~(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
+                if (item->checkState() != Qt::Unchecked) {
+                    item->setCheckState(Qt::Unchecked);
+                }
+            } else {
+                flags |= Qt::ItemIsUserCheckable | Qt::ItemIsEnabled;
+            }
+            item->setFlags(flags);
+        }
+    }
+    updateTargetStyles();
+
+    QVector<int> targets;
+    for (int i = 0; i < m_targets->count(); ++i) {
+        const QListWidgetItem* item = m_targets->item(i);
+        if (!item->data(Qt::UserRole).isValid()) {
+            continue;
+        }
+        if (item->checkState() == Qt::Checked) {
+            targets.push_back(item->data(Qt::UserRole).toInt());
+        }
+    }
+    m_canvas->setDepot(depot);
+    m_canvas->setTargets(targets);
+    if (m_contextFields != nullptr) {
+        m_contextFields->setText(ef::fields({
+            QString("权重 %1").arg(m_mode->currentText()),
+            QString("总站 %1").arg(depot > 0 ? QString::number(depot) : QStringLiteral("—")),
+            QString("目标 %1").arg(targets.size()),
+        }));
+    }
+    if (m_canvas != nullptr) {
+        m_canvas->setAccessibleDescription(
+            QString("站点 %1 个，道路 %2 条，总站 %3，已选目标 %4 个%5。")
+                .arg(m_system.stationCount())
+                .arg(m_system.roads().size())
+                .arg(depot > 0 ? QString::number(depot) : QStringLiteral("未选择"))
+                .arg(targets.size())
+                .arg(m_path.isEmpty()
+                         ? QString()
+                         : QString("，当前路线经过 %1 站").arg(m_path.size())));
+    }
+}
+
+void MainWindow::updateMetrics() {
+    int targetCount = 0;
+    for (int i = 0; i < m_targets->count(); ++i) {
+        if (m_targets->item(i)->checkState() == Qt::Checked) {
+            ++targetCount;
+        }
+    }
+    const int alertCount = m_system.alerts().size();
+    if (m_metrics != nullptr) {
+        m_metrics->setMetrics({
+            {QStringLiteral("STATIONS"), QString::number(m_system.stationCount()),
+             QStringLiteral("个"), QStringLiteral("站点"), false},
+            {QStringLiteral("ROADS"), QString::number(m_system.roads().size()),
+             QStringLiteral("条"), QStringLiteral("道路"), false},
+            {QStringLiteral("TARGETS"), QString::number(targetCount), QStringLiteral("站"),
+             QStringLiteral("调度目标"), false},
+            {QStringLiteral("ALERTS"), QString::number(alertCount), QStringLiteral("条"),
+             QStringLiteral("调度告警"), alertCount > 0},
+        });
+    }
+    if (m_bar != nullptr) {
+        m_bar->setFields(ef::fields({
+            QString("站点 %1").arg(m_system.stationCount()),
+            QString("道路 %1").arg(m_system.roads().size()),
+            QString("调度告警 %1").arg(alertCount),
+        }));
+    }
+    if (m_contextFields != nullptr) {
+        const int depot =
+            m_source->currentData().isValid() ? m_source->currentData().toInt() : -1;
+        m_contextFields->setText(ef::fields({
+            QString("权重 %1").arg(m_mode->currentText()),
+            QString("总站 %1").arg(depot > 0 ? QString::number(depot) : QStringLiteral("—")),
+            QString("目标 %1").arg(targetCount),
+        }));
     }
 }
 
@@ -366,40 +734,73 @@ void MainWindow::refreshStations() {
     m_stationTable->setRowCount(m_system.stationCount());
     for (int i = 0; i < m_system.stationCount(); ++i) {
         const ds::Station& s = m_system.stationAt(i);
-        m_stationTable->setItem(i, 0, new QTableWidgetItem(QString::number(s.id)));
-        m_stationTable->setItem(i, 1, new QTableWidgetItem(QString::fromUtf8(s.name)));
-        m_stationTable->setItem(i, 2, new QTableWidgetItem(QString::number(s.bikes)));
-        m_stationTable->setItem(i, 3, new QTableWidgetItem(QString::number(s.capacity)));
+        auto* idItem = new QTableWidgetItem(QString::number(s.id));
+        idItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        idItem->setFont(ef::font(ef::FontRole::Field));
+        auto* nameItem = new QTableWidgetItem(QString::fromUtf8(s.name));
+        nameItem->setFont(ef::font(ef::FontRole::Label));
+        auto* bikesItem = new QTableWidgetItem(QString::number(s.bikes));
+        bikesItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        bikesItem->setFont(ef::font(ef::FontRole::Field));
+        auto* capItem = new QTableWidgetItem(QString::number(s.capacity));
+        capItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        capItem->setFont(ef::font(ef::FontRole::Field));
 
         const int low = s.capacity * m_lowPercent->value() / 100;
         const int high = s.capacity * m_highPercent->value() / 100;
-        QString status = "正常";
-        QColor color(0x27, 0xAE, 0x60);
-        if (s.bikes < low) {
-            status = "偏低";
-            color = QColor(0xEB, 0x57, 0x57);
-        } else if (s.bikes > high) {
-            status = "偏高";
-            color = QColor(0xF2, 0x99, 0x4A);
+        const bool lowAlert = s.bikes < low;
+        const bool highAlert = s.bikes > high;
+        const QString statusText = lowAlert ? QStringLiteral("偏低")
+                                  : highAlert ? QStringLiteral("偏高")
+                                              : QStringLiteral("正常");
+
+        m_stationTable->setItem(i, 0, idItem);
+        m_stationTable->setItem(i, 1, nameItem);
+        m_stationTable->setItem(i, 2, bikesItem);
+        m_stationTable->setItem(i, 3, capItem);
+        m_stationTable->setRowHeight(i, 22);
+        m_stationTable->removeCellWidget(i, 4);
+        if (lowAlert || highAlert) {
+            auto* cell = new QLabel(statusText, m_stationTable);
+            cell->setObjectName(QStringLiteral("efAlertCell"));
+            cell->setAlignment(Qt::AlignCenter);
+            QFont f = ef::font(ef::FontRole::Field);
+            f.setWeight(QFont::Bold);
+            cell->setFont(f);
+            cell->setToolTip(lowAlert
+                                 ? QString("低于下限：%1 / %2").arg(s.bikes).arg(low)
+                                 : QString("高于上限：%1 / %2").arg(s.bikes).arg(high));
+            m_stationTable->setCellWidget(i, 4, cell);
+        } else {
+            auto* statusItem = new QTableWidgetItem(statusText);
+            statusItem->setTextAlignment(Qt::AlignCenter);
+            statusItem->setFont(ef::font(ef::FontRole::Field));
+            m_stationTable->setItem(i, 4, statusItem);
         }
-        auto* statusItem = new QTableWidgetItem(status);
-        statusItem->setForeground(color);
-        m_stationTable->setItem(i, 4, statusItem);
     }
 }
 
 void MainWindow::refreshEdges() {
-    const QString current = m_edge->currentData().isValid() ? m_edge->currentData().toString() : QString();
+    const QString current =
+        m_edge->currentData().isValid() ? m_edge->currentData().toString() : QString();
+    const QSignalBlocker blocker(m_edge);
     m_edge->clear();
+    if (m_system.roads().size() == 0) {
+        m_edge->addItem(QStringLiteral("// 暂无道路"));
+        m_edge->setEnabled(false);
+        m_edge->setToolTip(QStringLiteral("先加载示例地图或新增道路"));
+        return;
+    }
+    m_edge->setEnabled(true);
     for (int i = 0; i < m_system.roads().size(); ++i) {
         const ds::Road& r = m_system.roads()[i];
         const bool active = m_system.hasActiveRoad(r.u, r.v);
-        const QString text = QString("%1 - %2  %3m / %4min%5")
+        const QString text = QString("%1 - %2  │  %3 m / %4 min%5")
                                  .arg(r.u)
                                  .arg(r.v)
                                  .arg(r.dist, 0, 'f', 0)
                                  .arg(r.time, 0, 'f', 0)
-                                 .arg(active ? "" : "  [已阻断]");
+                                 .arg(active ? QString() : QStringLiteral("  [阻断]"));
         m_edge->addItem(text, QString("%1,%2").arg(r.u).arg(r.v));
     }
     if (!current.isEmpty()) {
@@ -408,17 +809,29 @@ void MainWindow::refreshEdges() {
             m_edge->setCurrentIndex(idx);
         }
     }
+    m_edge->setToolTip(m_edge->currentText());
 }
 
 void MainWindow::refreshAlerts() {
+    const ef::Palette& c = ef::palette();
     m_alerts->clear();
     if (m_system.alerts().empty()) {
-        m_alerts->addItem("无告警");
+        auto* item = new QListWidgetItem(
+            QStringLiteral("// 当前没有调度告警。站点库存异常显示在站点状态表。"));
+        item->setFlags(Qt::NoItemFlags);
+        item->setForeground(QBrush(c.ink2));
+        item->setFont(ef::font(ef::FontRole::Field));
+        m_alerts->addItem(item);
         return;
     }
     for (int i = 0; i < m_system.alerts().size(); ++i) {
         const ds::Alert& a = m_system.alerts()[i];
-        m_alerts->addItem(QString("[%1] %2").arg(a.stationId).arg(QString::fromUtf8(a.text)));
+        auto* item = new QListWidgetItem(
+            QString("!  [%1] %2").arg(a.stationId).arg(QString::fromUtf8(a.text)));
+        item->setBackground(QBrush(c.signal));
+        item->setFont(ef::font(ef::FontRole::Field));
+        item->setToolTip(item->text());
+        m_alerts->addItem(item);
     }
 }
 
@@ -432,130 +845,167 @@ QString MainWindow::stationLabel(int id) const {
 
 void MainWindow::addStationDialog() {
     QDialog dialog(this);
-    dialog.setWindowTitle("新增站点");
+    dialog.setWindowTitle(QStringLiteral("新增站点"));
+    dialog.setMinimumWidth(440);
     auto* layout = new QVBoxLayout(&dialog);
-    auto* form = new QFormLayout;
+    layout->setContentsMargins(18, 16, 18, 16);
+    layout->setSpacing(10);
+    layout->addWidget(ef::makeEyebrow(QStringLiteral("ADD STATION"), &dialog));
+    layout->addWidget(ef::makeTitle(QStringLiteral("新增站点"), &dialog));
+    layout->addWidget(ef::makeRule(&dialog));
 
     int maxId = 0;
     for (int i = 0; i < m_system.stationCount(); ++i) {
         maxId = qMax(maxId, m_system.stationAt(i).id);
     }
 
-    QSpinBox idSpin;
-    idSpin.setRange(1, 999999);
-    idSpin.setValue(maxId + 1);
-    QLineEdit nameEdit;
-    nameEdit.setText(QString("新站点%1").arg(maxId + 1));
-    QSpinBox bikesSpin;
-    bikesSpin.setRange(0, 9999);
-    bikesSpin.setValue(5);
-    QSpinBox capacitySpin;
-    capacitySpin.setRange(1, 9999);
-    capacitySpin.setValue(20);
-    QDoubleSpinBox xSpin;
-    xSpin.setRange(-10000, 10000);
-    xSpin.setValue(500);
-    QDoubleSpinBox ySpin;
-    ySpin.setRange(-10000, 10000);
-    ySpin.setValue(350);
-    form->addRow("站点编号", &idSpin);
-    form->addRow("站点名称", &nameEdit);
-    form->addRow("现有车辆", &bikesSpin);
-    form->addRow("最大容量", &capacitySpin);
-    form->addRow("X 坐标", &xSpin);
-    form->addRow("Y 坐标", &ySpin);
+    auto* form = new QFormLayout;
+    form->setHorizontalSpacing(12);
+    form->setVerticalSpacing(6);
+    auto* idSpin = new QSpinBox(&dialog);
+    idSpin->setRange(1, 999999);
+    idSpin->setValue(maxId + 1);
+    auto* nameEdit = new QLineEdit(&dialog);
+    nameEdit->setText(QString("新站点%1").arg(maxId + 1));
+    auto* bikesSpin = new QSpinBox(&dialog);
+    bikesSpin->setRange(0, 9999);
+    bikesSpin->setValue(5);
+    auto* capacitySpin = new QSpinBox(&dialog);
+    capacitySpin->setRange(1, 9999);
+    capacitySpin->setValue(20);
+    auto* xSpin = new QDoubleSpinBox(&dialog);
+    xSpin->setRange(-10000, 10000);
+    xSpin->setValue(500);
+    auto* ySpin = new QDoubleSpinBox(&dialog);
+    ySpin->setRange(-10000, 10000);
+    ySpin->setValue(350);
+    form->addRow(QStringLiteral("站点编号"), idSpin);
+    form->addRow(QStringLiteral("站点名称"), nameEdit);
+    form->addRow(QStringLiteral("现有车辆"), bikesSpin);
+    form->addRow(QStringLiteral("最大容量"), capacitySpin);
+    form->addRow(QStringLiteral("X 坐标"), xSpin);
+    form->addRow(QStringLiteral("Y 坐标"), ySpin);
     layout->addLayout(form);
 
-    QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    layout->addWidget(&buttons);
+    auto* actions = new QHBoxLayout;
+    actions->addStretch(1);
+    auto* cancel = new ef::EfButton(QStringLiteral("取消"), ef::EfButton::Variant::Secondary,
+                                    &dialog);
+    auto* ok = new ef::EfButton(QStringLiteral("新增"), ef::EfButton::Variant::Primary,
+                                &dialog);
+    actions->addWidget(cancel);
+    actions->addWidget(ok);
+    layout->addLayout(actions);
+    connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+    ok->setDefault(true);
+    cancel->setAutoDefault(false);
 
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
     char err[160] = {0};
-    if (!m_system.addStation(idSpin.value(), nameEdit.text().toUtf8().constData(),
-                             bikesSpin.value(), capacitySpin.value(), xSpin.value(),
-                             ySpin.value(), err, sizeof(err))) {
+    if (!m_system.addStation(idSpin->value(), nameEdit->text().toUtf8().constData(),
+                             bikesSpin->value(), capacitySpin->value(), xSpin->value(),
+                             ySpin->value(), err, sizeof(err))) {
         setStatus(QString::fromUtf8(err));
         return;
     }
+    invalidateRoute(QStringLiteral("路网已变化，原路线已失效，请重新规划。"));
     m_canvas->setSystem(&m_system);
     refreshSources();
     rebuildTargets();
     refreshStations();
     refreshEdges();
     refreshAll();
-    setStatus(QString("已新增站点 %1").arg(idSpin.value()));
+    setStatus(QString("已新增站点 %1").arg(idSpin->value()));
 }
 
 void MainWindow::addRoadDialog() {
     if (m_system.stationCount() < 2) {
-        setStatus("至少需要两个站点才能新增道路");
+        setStatus(QStringLiteral("至少需要两个站点才能新增道路"));
         return;
     }
     QDialog dialog(this);
-    dialog.setWindowTitle("新增道路");
+    dialog.setWindowTitle(QStringLiteral("新增道路"));
+    dialog.setMinimumWidth(440);
     auto* layout = new QVBoxLayout(&dialog);
-    auto* form = new QFormLayout;
+    layout->setContentsMargins(18, 16, 18, 16);
+    layout->setSpacing(10);
+    layout->addWidget(ef::makeEyebrow(QStringLiteral("ADD ROAD"), &dialog));
+    layout->addWidget(ef::makeTitle(QStringLiteral("新增道路"), &dialog));
+    layout->addWidget(ef::makeRule(&dialog));
 
-    QComboBox uCombo;
-    QComboBox vCombo;
+    auto* form = new QFormLayout;
+    form->setHorizontalSpacing(12);
+    form->setVerticalSpacing(6);
+    auto* uCombo = new QComboBox(&dialog);
+    auto* vCombo = new QComboBox(&dialog);
     for (int i = 0; i < m_system.stationCount(); ++i) {
         const ds::Station& s = m_system.stationAt(i);
         const QString label = QString("%1 %2").arg(s.id).arg(QString::fromUtf8(s.name));
-        uCombo.addItem(label, s.id);
-        vCombo.addItem(label, s.id);
+        uCombo->addItem(label, s.id);
+        vCombo->addItem(label, s.id);
     }
-    if (vCombo.count() > 1) {
-        vCombo.setCurrentIndex(1);
+    if (vCombo->count() > 1) {
+        vCombo->setCurrentIndex(1);
     }
-    QDoubleSpinBox distSpin;
-    distSpin.setRange(1.0, 1000000.0);
-    distSpin.setDecimals(1);
-    distSpin.setValue(500.0);
-    distSpin.setSuffix(" m");
-    QDoubleSpinBox timeSpin;
-    timeSpin.setRange(0.1, 100000.0);
-    timeSpin.setDecimals(1);
-    timeSpin.setValue(5.0);
-    timeSpin.setSuffix(" min");
-    form->addRow("端点 A", &uCombo);
-    form->addRow("端点 B", &vCombo);
-    form->addRow("距离", &distSpin);
-    form->addRow("通行耗时", &timeSpin);
+    auto* distSpin = new QDoubleSpinBox(&dialog);
+    distSpin->setRange(1.0, 1000000.0);
+    distSpin->setDecimals(1);
+    distSpin->setValue(500.0);
+    distSpin->setSuffix(QStringLiteral(" m"));
+    auto* timeSpin = new QDoubleSpinBox(&dialog);
+    timeSpin->setRange(0.1, 100000.0);
+    timeSpin->setDecimals(1);
+    timeSpin->setValue(5.0);
+    timeSpin->setSuffix(QStringLiteral(" min"));
+    form->addRow(QStringLiteral("端点 A"), uCombo);
+    form->addRow(QStringLiteral("端点 B"), vCombo);
+    form->addRow(QStringLiteral("距离"), distSpin);
+    form->addRow(QStringLiteral("通行耗时"), timeSpin);
     layout->addLayout(form);
 
-    QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    layout->addWidget(&buttons);
+    auto* actions = new QHBoxLayout;
+    actions->addStretch(1);
+    auto* cancel = new ef::EfButton(QStringLiteral("取消"), ef::EfButton::Variant::Secondary,
+                                    &dialog);
+    auto* ok = new ef::EfButton(QStringLiteral("新增"), ef::EfButton::Variant::Primary,
+                                &dialog);
+    actions->addWidget(cancel);
+    actions->addWidget(ok);
+    layout->addLayout(actions);
+    connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+    ok->setDefault(true);
+    cancel->setAutoDefault(false);
 
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
     char err[160] = {0};
-    if (!m_system.addRoad(uCombo.currentData().toInt(), vCombo.currentData().toInt(),
-                          distSpin.value(), timeSpin.value(), err, sizeof(err))) {
+    if (!m_system.addRoad(uCombo->currentData().toInt(), vCombo->currentData().toInt(),
+                          distSpin->value(), timeSpin->value(), err, sizeof(err))) {
         setStatus(QString::fromUtf8(err));
         return;
     }
+    invalidateRoute(QStringLiteral("路网已变化，原路线已失效，请重新规划。"));
     refreshEdges();
     refreshAll();
     setStatus(QString("已新增道路 %1 - %2")
-                  .arg(uCombo.currentData().toInt())
-                  .arg(vCombo.currentData().toInt()));
+                  .arg(uCombo->currentData().toInt())
+                  .arg(vCombo->currentData().toInt()));
 }
 
 void MainWindow::queryPair() {
     if (m_system.stationCount() == 0) {
-        setStatus("请先加载路网");
+        setStatus(QStringLiteral("请先加载路网"));
         return;
     }
     const int src = m_source->currentData().toInt();
     const int dst = m_dest->currentData().toInt();
-    const auto mode = m_mode->currentIndex() == 1 ? ds::WeightMode::Time : ds::WeightMode::Distance;
+    const auto mode = m_mode->currentIndex() == 1 ? ds::WeightMode::Time
+                                                  : ds::WeightMode::Distance;
     ds::Vector<int> path;
     double total = 0.0;
     if (!m_system.shortest(src, dst, mode, path, total)) {
@@ -569,24 +1019,28 @@ void MainWindow::queryPair() {
         m_path.push_back(path[i]);
     }
     m_canvas->setPath(m_path);
+    m_canvas->setDepot(src);
+    updateSelectionView();
     m_truckTimer->stop();
     m_canvas->setTruckProgress(-1.0);
 
     QString pathText;
     for (int i = 0; i < path.size(); ++i) {
         if (i > 0) {
-            pathText += " → ";
+            pathText += QStringLiteral(" → ");
         }
         pathText += stationLabel(path[i]);
     }
     const QString totalText = (mode == ds::WeightMode::Time)
                                   ? QString("%1 分钟").arg(total, 0, 'f', 1)
                                   : QString("%1 m").arg(total, 0, 'f', 0);
-    m_routeText->setPlainText(QString("两点最优路线（%1）：\n%2\n\n总权重：%3")
-                                  .arg(m_mode->currentText())
-                                  .arg(pathText)
-                                  .arg(totalText));
-    setStatus(QString("查询完成：%1 个途经站点，总权重 %2").arg(path.size()).arg(totalText));
+    m_routeText->setPlainText(
+        QString("// SHORTEST PATH\n%1\n\n%2\n\n%3")
+            .arg(pathText)
+            .arg(ef::fields({QString("权重 %1").arg(m_mode->currentText()),
+                             QString("途经 %1 站").arg(path.size())}))
+            .arg(ef::fields({QString("总权重 %1").arg(totalText)})));
+    setStatus(QString("查询完成：%1 个途经站点").arg(path.size()));
 }
 
 void MainWindow::checkReachability() {
@@ -594,7 +1048,7 @@ void MainWindow::checkReachability() {
         return;
     }
     const int depot = m_source->currentData().toInt();
-    QString text = QString("从 %1 出发的可达性：\n").arg(stationLabel(depot));
+    QString text = QString("// REACHABILITY\n从 %1 出发：\n").arg(stationLabel(depot));
     int count = 0;
     for (int i = 0; i < m_targets->count(); ++i) {
         const QListWidgetItem* item = m_targets->item(i);
@@ -603,19 +1057,22 @@ void MainWindow::checkReachability() {
         }
         const int id = item->data(Qt::UserRole).toInt();
         const bool ok = m_system.connected(depot, id);
-        text += QString("· %1：%2\n").arg(stationLabel(id)).arg(ok ? "可达" : "不可达");
+        text += QString("│ %1：%2\n").arg(stationLabel(id)).arg(ok ? QStringLiteral("可达")
+                                                                  : QStringLiteral("不可达"));
         ++count;
     }
     if (count == 0) {
-        text += "（尚未勾选目标站点）\n";
+        text += QStringLiteral("（尚未勾选目标站点）\n");
     }
     m_routeText->appendPlainText("\n" + text);
-    setStatus("可达性检查完成");
+    m_routeText->verticalScrollBar()->setValue(
+        m_routeText->verticalScrollBar()->maximum());
+    setStatus(QStringLiteral("可达性检查完成"));
 }
 
 void MainWindow::planRoute() {
     if (m_system.stationCount() == 0) {
-        setStatus("请先加载路网");
+        setStatus(QStringLiteral("请先加载路网"));
         return;
     }
     const int depot = m_source->currentData().toInt();
@@ -627,11 +1084,12 @@ void MainWindow::planRoute() {
         }
     }
     if (targets.empty()) {
-        setStatus("请至少勾选一个目标站点");
+        setStatus(QStringLiteral("请至少勾选一个目标站点"));
         return;
     }
 
-    const auto mode = m_mode->currentIndex() == 1 ? ds::WeightMode::Time : ds::WeightMode::Distance;
+    const auto mode = m_mode->currentIndex() == 1 ? ds::WeightMode::Time
+                                                  : ds::WeightMode::Distance;
     ds::Vector<int> tour;
     ds::Vector<int> full;
     double total = 0.0;
@@ -650,18 +1108,20 @@ void MainWindow::planRoute() {
         m_path.push_back(full[i]);
     }
     m_canvas->setPath(m_path);
+    m_canvas->setDepot(depot);
+    updateSelectionView();
 
     QString order;
     for (int i = 0; i < tour.size(); ++i) {
         if (i > 0) {
-            order += " → ";
+            order += QStringLiteral(" → ");
         }
         order += stationLabel(tour[i]);
     }
     QString pathText;
     for (int i = 0; i < full.size(); ++i) {
         if (i > 0) {
-            pathText += " → ";
+            pathText += QStringLiteral(" → ");
         }
         pathText += QString::number(full[i]);
     }
@@ -670,18 +1130,20 @@ void MainWindow::planRoute() {
                                   : QString("%1 m（约 %2 km）")
                                         .arg(total, 0, 'f', 0)
                                         .arg(total / 1000.0, 0, 'f', 2);
-    m_routeText->setPlainText(QString("调度顺序：\n%1\n\n完整途经站点：\n%2\n\n总权重：%3")
-                                  .arg(order)
-                                  .arg(pathText)
-                                  .arg(totalText));
+    m_routeText->setPlainText(
+        QString("// PLAN\n%1\n\n// PATH\n%2\n\n%3")
+            .arg(order)
+            .arg(pathText)
+            .arg(ef::fields({QString("总权重 %1").arg(totalText),
+                             QString("目标 %1 站").arg(targets.size())})));
     m_truckTimer->stop();
     m_canvas->setTruckProgress(-1.0);
-    setStatus(QString("路线规划完成：%1 个站点，总权重 %2").arg(tour.size()).arg(totalText));
+    setStatus(QString("路线规划完成：%1 个站点").arg(tour.size()));
 }
 
 void MainWindow::simulateDispatch() {
     if (m_tour.size() < 2) {
-        setStatus("请先规划调度路线");
+        setStatus(QStringLiteral("请先规划调度路线"));
         return;
     }
     ds::Vector<int> tour;
@@ -694,32 +1156,39 @@ void MainWindow::simulateDispatch() {
         setStatus(QString::fromUtf8(report.message));
         refreshStations();
         refreshAlerts();
+        updateMetrics();
         return;
     }
 
-    m_routeText->appendPlainText(QString("\n\n—— 调度模拟 ——\n%1").arg(QString::fromUtf8(report.message)));
+    QString summary = QString::fromUtf8(report.message);
+    summary.replace(QStringLiteral("，总耗时"), QStringLiteral("\n总耗时"));
+    m_routeText->appendPlainText(QString("\n\n// DISPATCH\n%1").arg(summary));
     for (int i = 0; i < report.stops.size(); ++i) {
         const ds::StopRecord& s = report.stops[i];
         m_routeText->appendPlainText(
-            QString("%1：%2 → %3，卸 %4 / 装 %5，车载 %6%7")
+            QString("%1  │  %2 → %3  │  卸 %4 / 装 %5  │  车载 %6%7")
                 .arg(stationLabel(s.stationId))
                 .arg(s.before)
                 .arg(s.after)
                 .arg(s.unloaded)
                 .arg(s.loaded)
                 .arg(s.load)
-                .arg(s.alert ? "  ⚠" : ""));
+                .arg(s.alert ? QStringLiteral("  !") : QString()));
     }
+    m_routeText->verticalScrollBar()->setValue(
+        m_routeText->verticalScrollBar()->maximum());
 
     m_progress = 0.0;
     m_canvas->setTruckProgress(0.0);
-    m_truckTimer->start();
+    if (ef::reduceMotion()) {
+        m_progress = 1.0;
+        m_canvas->setTruckProgress(1.0);
+    } else {
+        m_truckTimer->start();
+    }
     refreshStations();
     refreshAlerts();
-    m_summary->setText(QString("站点 %1 个 · 道路 %2 条 · 告警 %3 条")
-                           .arg(m_system.stationCount())
-                           .arg(m_system.roads().size())
-                           .arg(m_system.alerts().size()));
+    updateMetrics();
     setStatus(QString::fromUtf8(report.message));
 }
 
@@ -735,7 +1204,7 @@ void MainWindow::blockSelected() {
     const int u = parts[0].toInt();
     const int v = parts[1].toInt();
     if (!m_system.blockRoad(u, v)) {
-        setStatus("该道路已阻断或不存在");
+        setStatus(QStringLiteral("该道路已阻断或不存在"));
         return;
     }
     m_tour.clear();
@@ -744,7 +1213,7 @@ void MainWindow::blockSelected() {
     m_truckTimer->stop();
     refreshEdges();
     refreshAll();
-    m_routeText->appendPlainText("\n道路已阻断，请重新规划路线。");
+    m_routeText->appendPlainText(QStringLiteral("\n// ROAD BLOCK\n道路已阻断，请重新规划路线。"));
     checkReachability();
     setStatus(QString("已阻断道路 %1 - %2").arg(u).arg(v));
 }
@@ -761,7 +1230,7 @@ void MainWindow::restoreSelected() {
     const int u = parts[0].toInt();
     const int v = parts[1].toInt();
     if (!m_system.restoreRoad(u, v)) {
-        setStatus("该道路不存在");
+        setStatus(QStringLiteral("该道路不存在"));
         return;
     }
     refreshEdges();
@@ -777,6 +1246,16 @@ void MainWindow::animateTruck() {
         m_truckTimer->stop();
     }
     m_canvas->setTruckProgress(m_progress);
+}
+
+void MainWindow::toggleTheme() {
+    ef::setDark(!ef::isDark());
+    ef::apply(*qApp);
+    m_bar->themeButton()->setText(ef::isDark() ? QStringLiteral("浅色")
+                                               : QStringLiteral("深色"));
+    refreshAll();
+    setStatus(ef::isDark() ? QStringLiteral("已切换到深色主题")
+                           : QStringLiteral("已切换到浅色主题"));
 }
 
 void MainWindow::setStatus(const QString& text) {

@@ -74,9 +74,14 @@ public:
     const Vector<Truck>& trucks() const { return m_trucks; }
     const Truck& truckAt(int index) const { return m_trucks[index]; }
     const Vector<Event>& events() const { return m_events; }
+    long long eventSeq() const { return m_eventSeq; }
 
     YardStats stats() const;
     void resetEvents() { m_events.clear(); }
+
+    // 供测试使用的状态一致性检查：
+    // 到达数 = 在场数 + 离场数；通道/临时区/队列中的下标有效且不重复。
+    bool checkInvariant() const;
 
 private:
     void fillChannel(double t);
@@ -95,6 +100,7 @@ private:
     Queue<int> m_queues[3];
 
     Vector<Event> m_events;
+    long long m_eventSeq = 0;
     double m_revenue = 0.0;
     int m_arrived = 0;
     int m_served = 0;

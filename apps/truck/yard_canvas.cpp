@@ -1,40 +1,36 @@
 #include "yard_canvas.h"
 
 #include <QFont>
+#include <QFontMetrics>
 #include <QPainter>
 #include <QTimer>
 
-#include <utility>
+#include <algorithm>
+
+#include "common/theme.h"
 
 namespace {
 
-QColor colorFor(ds::CargoType type) {
+QString typeEn(int type) {
     switch (type) {
-        case ds::CargoType::Fresh: return QColor(0x27, 0xAE, 0x60);
-        case ds::CargoType::Normal: return QColor(0x2F, 0x80, 0xED);
-        case ds::CargoType::Bulk: return QColor(0xF2, 0x99, 0x4A);
+        case 0: return QStringLiteral("FRESH");
+        case 1: return QStringLiteral("NORMAL");
+        default: return QStringLiteral("BULK");
     }
-    return QColor(0x88, 0x88, 0x88);
-}
-
-QColor darkFor(ds::CargoType type) {
-    switch (type) {
-        case ds::CargoType::Fresh: return QColor(0x1E, 0x84, 0x49);
-        case ds::CargoType::Normal: return QColor(0x1C, 0x5F, 0xB8);
-        case ds::CargoType::Bulk: return QColor(0xB9, 0x6B, 0x22);
-    }
-    return QColor(0x55, 0x55, 0x55);
 }
 
 }  // namespace
 
 YardCanvas::YardCanvas(QWidget* parent) : QWidget(parent) {
-    setMinimumSize(680, 520);
+    setMinimumSize(480, 438);
     setAutoFillBackground(false);
     m_timer = new QTimer(this);
-    m_timer->setInterval(30);
+    m_timer->setInterval(33);
     connect(m_timer, &QTimer::timeout, this, [this]() { update(); });
-    m_timer->start();
+}
+
+int YardCanvas::verticalShift() const {
+    return std::clamp((height() - 500) / 4, 0, 48);
 }
 
 void YardCanvas::setYard(ds::TruckYard* yard) {
@@ -55,12 +51,7 @@ int YardCanvas::slotW() const {
         return 60;
     }
     int w = (avail - gap() * (cap - 1)) / cap;
-    if (w > 76) {
-        w = 76;
-    }
-    if (w < 12) {
-        w = 12;
-    }
+    w = std::clamp(w, 16, 64);
     return w;
 }
 
@@ -98,47 +89,77 @@ QPointF YardCanvas::targetFor(int index) const {
             if (q.at(i) == index) {
                 const int col = i % 4;
                 const int row = (i / 4) % 2;
-                return QPointF(30 + col * 56 + 24, laneY(type) + 30 + row * 28 + 11);
+                return QPointF(14 + 8 + col * 50 + 21,
+                               laneY(type) + 33 + row * 18 + 9);
             }
         }
     }
-    return QPointF(width() + 120.0, channelY() + sh / 2.0);
+    return QPointF(width() + 80.0, channelY() + sh / 2.0);
 }
 
 void YardCanvas::paintTruck(QPainter& p, const QPointF& pos, const ds::Truck& t,
                             bool small) {
-    const qreal w = small ? 48.0 : qMin(58.0, qMax(18.0, slotW() - 4.0));
-    const qreal h = small ? 22.0 : 36.0;
-    QRectF r(pos.x() - w / 2.0, pos.y() - h / 2.0, w, h);
+    const qreal w = small ? 42.0 : std::min(52.0, std::max(16.0, slotW() - 2.0));
+    const qreal h = small ? 18.0 : 30.0;
+    const QRectF r(pos.x() - w / 2.0, pos.y() - h / 2.0, w, h);
     if (!r.intersects(QRectF(0, 0, width(), height()))) {
         return;
     }
-    p.setBrush(colorFor(t.type));
-    p.setPen(QPen(darkFor(t.type), small ? 1.0 : 2.0));
-    p.drawRoundedRect(r, small ? 4.0 : 7.0, small ? 4.0 : 7.0);
 
-    QFont f = p.font();
-    f.setBold(true);
-    f.setPointSize(small ? 7 : (w < 40.0 ? 6 : 9));
+    const ef::Palette& c = ef::palette();
+    QColor fill = c.panel;
+    QColor text = c.ink;
+    bool hatch = false;
+    if (t.type == ds::CargoType::Fresh) {
+        fill = c.ink;
+        text = c.paper;
+    } else if (t.type == ds::CargoType::Bulk) {
+        hatch = true;
+    }
+
+    p.setBrush(fill);
+    p.setPen(QPen(c.ink, 1.0));
+    p.drawRect(r);
+    if (hatch) {
+        ef::drawHatch(p, r.adjusted(1, 1, -1, -1), c.ink, 0.22);
+    }
+
+    QFont f = ef::font(ef::FontRole::Field);
+    // 窄窗口里主通道每格只有 20 多像素，标签必须跟着缩一档，否则会被裁掉。
+    f.setPixelSize(small ? 7 : (w < 34.0 ? 6 : 9));
+    // 小字号下不要合成粗体：合成后的横画会糊成一团，T1001 反而不好认。
+    f.setWeight(QFont::Normal);
     p.setFont(f);
-    p.setPen(Qt::white);
-    p.drawText(r, Qt::AlignCenter,
-               w < 26.0 ? QString::number(t.id) : QString("T%1").arg(t.id));
+    p.setPen(text);
+    const QString label = w < 34.0 ? QString::number(t.id) : QString("T%1").arg(t.id);
+    // Saira 的行盒比字形高，AlignCenter 会把字顶高；按字形包围盒手动居中。
+    const QFontMetrics fm(f);
+    const QRect bounds = fm.boundingRect(label);
+    const QPointF baseline(r.center().x() - bounds.width() / 2.0 - bounds.left(),
+                           r.center().y() - bounds.center().y());
+    p.drawText(baseline, label);
 }
 
-void YardCanvas::paintEvent(QPaintEvent* event) {
-    Q_UNUSED(event);
+void YardCanvas::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.fillRect(rect(), QColor(0xF5, 0xF7, 0xFA));
-
-    QFont base = p.font();
-    base.setPointSize(9);
-    p.setFont(base);
+    const ef::Palette& c = ef::palette();
+    p.fillRect(rect(), c.panel);
+    ef::drawContours(p, QRectF(rect()), c.ink, ef::isDark() ? 0.06 : 0.09);
 
     if (m_yard == nullptr || !m_yard->configured()) {
-        p.setPen(QColor(0x6B, 0x72, 0x80));
-        p.drawText(rect(), Qt::AlignCenter, "请先设置场地参数");
+        if (m_timer->isActive()) {
+            m_timer->stop();
+        }
+        const QRectF empty(36, 90, width() - 72.0, height() - 180.0);
+        ef::drawHatch(p, empty, c.ink, 0.22);
+        p.setPen(QPen(c.rule, 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(empty);
+        p.setPen(c.ink);
+        p.setFont(ef::font(ef::FontRole::Label));
+        p.drawText(empty, Qt::AlignCenter,
+                   QStringLiteral("请先在左侧设置场地参数并应用。"));
         return;
     }
 
@@ -148,115 +169,191 @@ void YardCanvas::paintEvent(QPaintEvent* event) {
     const int sh = slotH();
     const int gy = gap();
 
-    // 标题
-    QFont title = p.font();
-    title.setPointSize(12);
-    title.setBold(true);
-    p.setFont(title);
-    p.setPen(QColor(0x1F, 0x2A, 0x37));
-    p.drawText(24, 34, "快递中转场 · 栈 + 优先级队列混合调度");
+    // 顶部字段：都是真实数据。
+    p.setFont(ef::font(ef::FontRole::Field));
+    p.setPen(c.ink2);
+    p.drawText(QRectF(16, 14, width() - 32, 18), Qt::AlignLeft | Qt::AlignVCenter,
+               ef::fields({QString("主通道 %1 位").arg(cap),
+                           QString("临时区 %1 位").arg(tempCap),
+                           QString("费率 %1 元/小时").arg(m_yard->feePerHour(), 0, 'f', 2)}));
 
-    QFont sub = p.font();
-    sub.setPointSize(9);
-    sub.setBold(false);
-    p.setFont(sub);
-    p.setPen(QColor(0x6B, 0x72, 0x80));
-    p.drawText(24, 56, QString("主通道容量 %1 辆   临时区容量 %2 辆   费率 %3 元/小时")
-                           .arg(cap)
-                           .arg(tempCap)
-                           .arg(m_yard->feePerHour(), 0, 'f', 2));
+    // 主通道。
+    p.setFont(ef::font(ef::FontRole::Label));
+    p.setPen(c.ink);
+    p.drawText(QPointF(channelX(), channelY() - 10.0), QStringLiteral("主装卸通道"));
+    p.setFont(ef::font(ef::FontRole::Small));
+    p.setPen(c.ink2);
+    p.drawText(QRectF(width() - 90.0, channelY() - 22.0, 74.0, 14.0),
+               Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("入口"));
 
-    // 通道槽位
-    p.setPen(QColor(0x9A, 0xA3, 0xAF));
-    p.setBrush(QColor(0xE9, 0xEE, 0xF5));
     for (int i = 0; i < cap; ++i) {
-        QRectF r(channelX() + i * (sw + gy), channelY(), sw, sh);
-        p.drawRoundedRect(r, 5, 5);
-        p.setPen(QColor(0xC5, 0xCE, 0xDA));
-        p.drawText(r.adjusted(0, 0, 0, -4), Qt::AlignBottom | Qt::AlignHCenter,
-                   QString::number(i + 1));
-        p.setPen(QColor(0x9A, 0xA3, 0xAF));
+        const QRectF r(channelX() + i * (sw + gy), channelY(), sw, sh);
+        p.fillRect(r, c.panel);
+        ef::drawHatch(p, r.adjusted(1, 1, -1, -1), c.ink, 0.10);
+        p.setPen(QPen(c.rule, 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(r);
+        p.setFont(ef::font(ef::FontRole::Small));
+        p.setPen(c.ink2);
+        p.drawText(r.adjusted(3, 0, -3, -3), Qt::AlignLeft | Qt::AlignBottom,
+                   QString("%1").arg(i + 1, 2, 10, QChar('0')));
     }
-    p.setPen(QColor(0x6B, 0x72, 0x80));
-    p.drawText(channelX(), channelY() - 10, "主装卸通道（栈，左为栈底 / 右为入口）");
-    p.drawText(channelX() + cap * (sw + gy) + 4, channelY() + sh / 2 + 5, "入口 →");
+    p.setPen(Qt::NoPen);
+    p.setBrush(c.trace);
+    p.drawRect(QRectF(channelX(), channelY() + sh + 3.0,
+                      cap * (sw + gy) - gy, 3.0));
 
-    // 临时区槽位
-    p.drawText(channelX(), tempY() - 10, "临时等候区（栈，让路时暂存）");
+    // 临时区。
+    p.setFont(ef::font(ef::FontRole::Label));
+    p.setPen(c.ink);
+    p.drawText(QPointF(channelX(), tempY() - 10.0), QStringLiteral("临时等候区"));
+    p.setFont(ef::font(ef::FontRole::Field));
+    p.setPen(c.ink2);
+    p.drawText(QPointF(channelX() + 108.0, tempY() - 12.0),
+               QString("%1 / %2 辆")
+                   .arg(m_yard->temp().size())
+                   .arg(tempCap));
     for (int i = 0; i < tempCap; ++i) {
-        QRectF r(channelX() + i * (sw + gy), tempY(), sw, sh);
-        p.setPen(QColor(0xC0, 0x9A, 0x7A));
-        p.setBrush(QColor(0xFA, 0xF1, 0xE8));
-        p.drawRoundedRect(r, 5, 5);
+        const QRectF r(channelX() + i * (sw + gy), tempY(), sw, sh);
+        p.fillRect(r, c.panel);
+        ef::drawHatch(p, r.adjusted(1, 1, -1, -1), c.ink, 0.16);
+        p.setPen(QPen(c.rule, 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(r);
     }
     if (tempCap == 0) {
-        p.setPen(QColor(0x6B, 0x72, 0x80));
-        p.drawText(channelX() + 4, tempY() + sh / 2 + 5, "（未设置临时区）");
+        p.setPen(c.ink2);
+        p.setFont(ef::font(ef::FontRole::Small));
+        p.drawText(QPointF(channelX() + 4, tempY() + sh / 2 + 4),
+                   QStringLiteral("未设置临时区"));
     }
 
-    // 队列
+    // 三条优先级队列。
     for (int k = 0; k < 3; ++k) {
         const ds::CargoType type = static_cast<ds::CargoType>(k);
         const int y = laneY(k);
-        QRectF lane(20, y, 250, 86);
-        p.setPen(QColor(0xD5, 0xDD, 0xE8));
-        p.setBrush(QColor(0xFF, 0xFF, 0xFF));
-        p.drawRoundedRect(lane, 8, 8);
+        const QRectF lane(14, y, 220, laneH());
+        p.fillRect(lane, c.panel);
+        p.setPen(QPen(c.rule, 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(lane);
 
-        p.setPen(colorFor(type));
-        QFont f = p.font();
-        f.setBold(true);
-        p.setFont(f);
-        p.drawText(30, y + 20, QString("%1队列").arg(ds::cargoName(type)));
-        p.setPen(QColor(0x6B, 0x72, 0x80));
-        f.setBold(false);
-        p.setFont(f);
-        p.drawText(210, y + 20, QString("积压 %1").arg(m_yard->queue(type).size()));
+        p.setFont(ef::font(ef::FontRole::Eyebrow));
+        p.setPen(c.ink2);
+        p.drawText(QRectF(lane.left() + 8, lane.top() + 5, lane.width() - 16, 12),
+                   Qt::AlignLeft | Qt::AlignVCenter,
+                   QString("// %1").arg(typeEn(k)));
+        p.setFont(ef::font(ef::FontRole::Label));
+        p.setPen(c.ink);
+        p.drawText(QPointF(lane.left() + 8, lane.top() + 26),
+                   QString::fromUtf8(ds::cargoName(type)));
+        p.setFont(ef::font(ef::FontRole::Field));
+        p.setPen(c.ink2);
+        const int queued = m_yard->queue(type).size();
+        p.drawText(QRectF(lane.left() + 8, lane.top() + 5, lane.width() - 16, 12),
+                   Qt::AlignRight | Qt::AlignVCenter,
+                   queued > 8 ? QString("%1 辆（+%2）").arg(queued).arg(queued - 8)
+                              : QString("%1 辆").arg(queued));
 
-        const int shown = m_yard->queue(type).size() < 8 ? m_yard->queue(type).size() : 8;
-        for (int i = 0; i < shown; ++i) {
-            const int col = i % 4;
-            const int row = i / 4;
-            const QPointF pos(30 + col * 56 + 24, y + 30 + row * 28 + 11);
-            const int index = m_yard->queue(type).at(i);
-            paintTruck(p, pos, m_yard->truckAt(index), true);
-        }
-        if (m_yard->queue(type).size() > 8) {
-            p.setPen(QColor(0x6B, 0x72, 0x80));
-            p.drawText(30, y + 82, QString("+%1 辆").arg(m_yard->queue(type).size() - 8));
-        }
-    }
+        p.setPen(QPen(c.rule, 1.0));
+        p.drawLine(QPointF(lane.left() + 8, lane.top() + 30),
+                   QPointF(lane.right() - 8, lane.top() + 30));
 
-    // 动画位置：向目标位置平滑靠拢。
-    const ds::Vector<ds::Truck>& trucks = m_yard->trucks();
-    for (int i = 0; i < trucks.size(); ++i) {
-        const QPointF target = targetFor(i);
-        if (!m_pos.contains(i)) {
-            m_pos.insert(i, target);
+        const ds::Queue<int>& q = m_yard->queue(type);
+        if (q.empty()) {
+            const QRectF empty(lane.left() + 8, lane.top() + 33, lane.width() - 16, 31);
+            ef::drawHatch(p, empty, c.ink, 0.16);
+            p.setPen(c.ink2);
+            p.setFont(ef::font(ef::FontRole::Small));
+            p.drawText(empty, Qt::AlignCenter, QStringLiteral("暂无排队车辆。"));
         } else {
-            QPointF cur = m_pos.value(i);
-            cur += (target - cur) * 0.28;
-            m_pos[i] = cur;
+            const int shown = std::min(q.size(), 8);
+            for (int i = 0; i < shown; ++i) {
+                const int col = i % 4;
+                const int row = i / 4;
+                const QPointF pos(lane.left() + 8 + col * 50 + 21,
+                                  lane.top() + 33 + row * 18 + 9);
+                paintTruck(p, pos, m_yard->truckAt(q.at(i)), true);
+            }
         }
     }
+
+    // 平滑移动：只处理通道、临时区和已离场的车辆。
+    // 只有确实存在位移时才启动 33ms 定时器，静止后立刻停下，避免空转重绘。
+    bool moving = false;
+    const ds::Vector<ds::Truck>& trucks = m_yard->trucks();
     for (int i = 0; i < trucks.size(); ++i) {
         const ds::Truck& t = trucks[i];
         if (t.state == ds::TruckState::Waiting) {
-            continue;  // 队列里的车已经按槽位画过
+            continue;
         }
-        paintTruck(p, m_pos.value(i), t, false);
+        const QPointF target = targetFor(i);
+        if (t.state == ds::TruckState::Left) {
+            if (!m_pos.contains(i)) {
+                continue;
+            }
+            QPointF cur = m_pos.value(i);
+            cur += (target - cur) * 0.30;
+            m_pos[i] = cur;
+            if (cur.x() > width() + 40.0) {
+                m_pos.remove(i);
+                continue;
+            }
+            moving = true;
+            paintTruck(p, cur, t, false);
+            continue;
+        }
+
+        if (!m_pos.contains(i)) {
+            m_pos.insert(i, target);
+        }
+        QPointF cur = m_pos.value(i);
+        if (ef::reduceMotion()) {
+            cur = target;
+        } else {
+            cur += (target - cur) * 0.30;
+        }
+        if ((target - cur).manhattanLength() < 0.5) {
+            cur = target;
+        } else {
+            moving = true;
+        }
+        m_pos[i] = cur;
+        paintTruck(p, cur, t, false);
     }
 
-    // 图例
-    int lx = 24;
-    const int ly = height() - 22;
+    if (moving) {
+        if (!m_timer->isActive()) {
+            m_timer->start();
+        }
+    } else if (m_timer->isActive()) {
+        m_timer->stop();
+    }
+
+    // 图例：类型用墨色、描边和斜线纹区分。
+    const int ly = height() - 14;
+    int lx = 16;
     const char* labels[3] = {"生鲜件", "普通件", "大件货"};
     for (int k = 0; k < 3; ++k) {
-        p.setBrush(colorFor(static_cast<ds::CargoType>(k)));
-        p.setPen(Qt::NoPen);
-        p.drawRoundedRect(QRectF(lx, ly - 10, 14, 12), 3, 3);
-        p.setPen(QColor(0x4B, 0x55, 0x63));
-        p.drawText(lx + 20, ly, QString::fromUtf8(labels[k]));
-        lx += 86;
+        const QRectF swatch(lx, ly - 10, 14, 10);
+        if (k == 0) {
+            p.fillRect(swatch, c.ink);
+        } else {
+            p.fillRect(swatch, c.panel);
+            p.setPen(QPen(c.ink, 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(swatch);
+            if (k == 2) {
+                ef::drawHatch(p, swatch.adjusted(1, 1, -1, -1), c.ink, 0.22);
+            }
+        }
+        p.setPen(c.ink2);
+        p.setFont(ef::font(ef::FontRole::Small));
+        p.drawText(QPointF(lx + 20, ly), QString::fromUtf8(labels[k]));
+        lx += 92;
     }
+    p.setPen(QPen(c.trace, 3.0));
+    p.drawLine(QPointF(width() - 180, ly - 5), QPointF(width() - 150, ly - 5));
+    p.setPen(c.ink2);
+    p.drawText(QPointF(width() - 142, ly), QStringLiteral("栈底线"));
 }

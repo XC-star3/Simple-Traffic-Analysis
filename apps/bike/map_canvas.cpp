@@ -2,39 +2,32 @@
 
 #include <QFont>
 #include <QFontMetrics>
+#include <QHash>
 #include <QLineF>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QtGlobal>
 
-namespace {
+#include <algorithm>
+#include <cmath>
+#include <utility>
 
-QColor stationColor(int bikes, int capacity) {
-    if (capacity <= 0) {
-        return QColor(0x2F, 0x80, 0xED);
-    }
-    const double ratio = static_cast<double>(bikes) / capacity;
-    if (ratio < 0.2) {
-        return QColor(0xEB, 0x57, 0x57);
-    }
-    if (ratio > 0.85) {
-        return QColor(0xF2, 0x99, 0x4A);
-    }
-    return QColor(0x2F, 0x80, 0xED);
-}
-
-}  // namespace
+#include "common/theme.h"
 
 MapCanvas::MapCanvas(QWidget* parent) : QWidget(parent) {
-    setMinimumSize(640, 520);
+    setMinimumSize(480, 300);
     setMouseTracking(true);
 }
 
 void MapCanvas::setSystem(ds::BikeSystem* system) {
     m_system = system;
     m_path.clear();
+    m_targets.clear();
+    m_depot = -1;
+    m_hoverId = -1;
     m_truckT = -1.0;
+    unsetCursor();
     update();
 }
 
@@ -55,6 +48,31 @@ void MapCanvas::clearPath() {
     update();
 }
 
+void MapCanvas::setDepot(int id) {
+    m_depot = id;
+    update();
+}
+
+void MapCanvas::setTargets(const QVector<int>& ids) {
+    m_targets = ids;
+    update();
+}
+
+void MapCanvas::setThresholds(int lowPercent, int highPercent) {
+    m_lowPercent = lowPercent;
+    m_highPercent = highPercent;
+    update();
+}
+
+void MapCanvas::setShowWeights(bool show) {
+    m_showWeights = show;
+    update();
+}
+
+void MapCanvas::setStationClickedHandler(std::function<void(int)> handler) {
+    m_stationClicked = std::move(handler);
+}
+
 QRectF MapCanvas::contentBounds() const {
     if (m_system == nullptr || m_system->stationCount() == 0) {
         return QRectF(0, 0, 1000, 700);
@@ -65,20 +83,21 @@ QRectF MapCanvas::contentBounds() const {
     double maxY = -1e18;
     for (int i = 0; i < m_system->stationCount(); ++i) {
         const ds::Station& s = m_system->stationAt(i);
-        minX = qMin(minX, s.x);
-        minY = qMin(minY, s.y);
-        maxX = qMax(maxX, s.x);
-        maxY = qMax(maxY, s.y);
+        minX = std::min(minX, s.x);
+        minY = std::min(minY, s.y);
+        maxX = std::max(maxX, s.x);
+        maxY = std::max(maxY, s.y);
     }
-    const double pad = 60.0;
-    return QRectF(minX - pad, minY - pad, (maxX - minX) + pad * 2, (maxY - minY) + pad * 2);
+    const double pad = 70.0;
+    return QRectF(minX - pad, minY - pad, (maxX - minX) + pad * 2,
+                  (maxY - minY) + pad * 2);
 }
 
 void MapCanvas::updateTransform() {
     const QRectF b = contentBounds();
-    const double sx = (width() - 80.0) / qMax(1.0, b.width());
-    const double sy = (height() - 100.0) / qMax(1.0, b.height());
-    m_scale = qMin(sx, sy);
+    const double sx = (width() - 80.0) / std::max(1.0, b.width());
+    const double sy = (height() - 88.0) / std::max(1.0, b.height());
+    m_scale = std::min(sx, sy);
     if (m_scale <= 0.0) {
         m_scale = 1.0;
     }
@@ -100,71 +119,115 @@ bool MapCanvas::onPath(int u, int v) const {
     return false;
 }
 
-void MapCanvas::paintEvent(QPaintEvent* event) {
-    Q_UNUSED(event);
+bool MapCanvas::alert(const ds::Station& s) const {
+    if (s.capacity <= 0) {
+        return false;
+    }
+    const int low = s.capacity * m_lowPercent / 100;
+    const int high = s.capacity * m_highPercent / 100;
+    return s.bikes < low || s.bikes > high;
+}
+
+void MapCanvas::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.fillRect(rect(), QColor(0xF7, 0xF9, 0xFC));
+    const ef::Palette& c = ef::palette();
+    p.fillRect(rect(), c.panel);
+    ef::drawContours(p, QRectF(rect()), c.ink, ef::isDark() ? 0.06 : 0.09);
     updateTransform();
 
-    QFont title = p.font();
-    title.setPointSize(12);
-    title.setBold(true);
-    p.setFont(title);
-    p.setPen(QColor(0x1F, 0x2A, 0x37));
-    p.drawText(20, 30, "城市公共自行车调度 · 路网与调度路线");
-
     if (m_system == nullptr || m_system->stationCount() == 0) {
-        p.setPen(QColor(0x6B, 0x72, 0x80));
-        p.drawText(rect(), Qt::AlignCenter, "请加载站点与道路数据");
+        const QRectF empty(36, 60, width() - 72.0, height() - 120.0);
+        ef::drawHatch(p, empty, c.ink, 0.22);
+        p.setPen(QPen(c.rule, 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(empty);
+        p.setPen(c.ink);
+        p.setFont(ef::font(ef::FontRole::Label));
+        p.drawText(empty, Qt::AlignCenter,
+                   QStringLiteral("还没有站点。先加载示例地图，或新增站点和道路。"));
         return;
     }
 
-    // 道路
+    // 站点方块可点击；把这一点直接写在画布上，不靠猜。
+    const bool showPlates = width() >= 620 && height() >= 360;
+    p.setFont(ef::font(ef::FontRole::Small));
+    p.setPen(c.ink2);
+    p.drawText(QRectF(18.0, 10.0, width() - 36.0, 14.0),
+               Qt::AlignLeft | Qt::AlignVCenter,
+               QStringLiteral("点击站点设为总站"));
+    if (!showPlates) {
+        p.drawText(QRectF(18.0, 10.0, width() - 36.0, 14.0),
+                   Qt::AlignRight | Qt::AlignVCenter,
+                   QStringLiteral("站名见右侧站点状态表"));
+    }
+
+    QHash<int, QPointF> pts;
+    for (int i = 0; i < m_system->stationCount(); ++i) {
+        const ds::Station& s = m_system->stationAt(i);
+        pts.insert(s.id, screenPos(s));
+    }
+
+    const auto roadColor = [&]() {
+        QColor color = c.ink2;
+        color.setAlpha(ef::isDark() ? 120 : 95);
+        return color;
+    }();
+
+    // 道路。
     for (int i = 0; i < m_system->roads().size(); ++i) {
         const ds::Road& r = m_system->roads()[i];
-        const ds::Station* su = m_system->findStation(r.u);
-        const ds::Station* sv = m_system->findStation(r.v);
-        if (su == nullptr || sv == nullptr) {
+        if (!pts.contains(r.u) || !pts.contains(r.v)) {
             continue;
         }
-        const QPointF a = screenPos(*su);
-        const QPointF b = screenPos(*sv);
+        const QPointF a = pts.value(r.u);
+        const QPointF b = pts.value(r.v);
         const bool active = m_system->hasActiveRoad(r.u, r.v);
         const bool highlight = onPath(r.u, r.v);
 
         QPen pen;
         if (highlight) {
-            pen = QPen(QColor(0xF2, 0xC9, 0x4C), 6.0, Qt::SolidLine, Qt::RoundCap);
+            pen = QPen(c.trace, 4.0, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin);
         } else if (!active) {
-            pen = QPen(QColor(0xEB, 0x57, 0x57), 2.0, Qt::DashLine);
+            pen = QPen(c.ink, 1.5, Qt::DashLine);
         } else {
-            pen = QPen(QColor(0xB8, 0xC2, 0xCF), 2.0);
+            pen = QPen(roadColor, 1.0);
         }
         p.setPen(pen);
         p.drawLine(a, b);
 
-        if (active && !highlight) {
-            QFont f = p.font();
-            f.setPointSize(7);
-            p.setFont(f);
-            p.setPen(QColor(0x9A, 0xA3, 0xAF));
+        if (!active) {
             const QPointF mid = (a + b) / 2.0;
-            p.drawText(mid + QPointF(4, -4),
-                       QString("%1m / %2min").arg(r.dist, 0, 'f', 0).arg(r.time, 0, 'f', 0));
+            const QRectF tag(mid.x() - 19.0, mid.y() - 8.0, 38.0, 15.0);
+            p.fillRect(tag, c.signal);
+            p.setPen(c.onSignal);
+            p.setFont(ef::font(ef::FontRole::Small));
+            p.drawText(tag, Qt::AlignCenter, QStringLiteral("阻断"));
+        } else if (m_showWeights && !highlight &&
+                   QLineF(a, b).length() > 72.0) {
+            const QFont f = ef::font(ef::FontRole::Field);
+            const QFontMetrics fm(f);
+            const QString text =
+                QString("%1 m / %2 min").arg(r.dist, 0, 'f', 0).arg(r.time, 0, 'f', 0);
+            const QPointF mid = (a + b) / 2.0;
+            const QRectF bg(mid.x() + 4.0, mid.y() - 14.0,
+                            fm.horizontalAdvance(text) + 6.0, 12.0);
+            p.fillRect(bg, c.panel);
+            p.setFont(f);
+            p.setPen(c.ink2);
+            p.drawText(bg.adjusted(3, 0, 0, 0), Qt::AlignLeft | Qt::AlignVCenter, text);
         }
     }
 
-    // 调度路线（在道路上方、站点下方）
+    // 调度路线：浅色用墨，深色用强调色。
     if (m_path.size() >= 2) {
         QPainterPath path;
         bool first = true;
         for (int id : m_path) {
-            const ds::Station* s = m_system->findStation(id);
-            if (s == nullptr) {
+            if (!pts.contains(id)) {
                 continue;
             }
-            const QPointF pt = screenPos(*s);
+            const QPointF pt = pts.value(id);
             if (first) {
                 path.moveTo(pt);
                 first = false;
@@ -172,135 +235,230 @@ void MapCanvas::paintEvent(QPaintEvent* event) {
                 path.lineTo(pt);
             }
         }
-        p.setPen(QPen(QColor(0xF2, 0xC9, 0x4C, 120), 10.0, Qt::SolidLine, Qt::RoundCap,
-                      Qt::RoundJoin));
         p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(c.panel, 7.0, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         p.drawPath(path);
+        p.setPen(QPen(c.trace, 4.0, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+        p.drawPath(path);
+
+        // 每段路线中间画一个方向箭头，避免环线看不出行驶方向。
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(c.trace, 1.6, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+        for (int i = 0; i + 1 < m_path.size(); ++i) {
+            if (!pts.contains(m_path[i]) || !pts.contains(m_path[i + 1])) {
+                continue;
+            }
+            const QPointF a = pts.value(m_path[i]);
+            const QPointF b = pts.value(m_path[i + 1]);
+            const QLineF segment(a, b);
+            if (segment.length() < 52.0) {
+                continue;
+            }
+            const QPointF mid = segment.pointAt(0.55);
+            const qreal angle = std::atan2(b.y() - a.y(), b.x() - a.x());
+            const qreal size = 5.0;
+            const qreal spread = 0.55;
+            p.drawLine(mid, mid + QPointF(-std::cos(angle - spread) * size,
+                                         -std::sin(angle - spread) * size));
+            p.drawLine(mid, mid + QPointF(-std::cos(angle + spread) * size,
+                                         -std::sin(angle + spread) * size));
+        }
     }
 
-    // 站点
+    // 站点：可点击，所以切角；库存状态用克莱因蓝小旗，不用红绿。
     for (int i = 0; i < m_system->stationCount(); ++i) {
         const ds::Station& s = m_system->stationAt(i);
         const QPointF pt = screenPos(s);
-        const double radius = qBound(14.0, 12.0 + s.capacity * 0.3, 26.0);
+        const qreal side = std::clamp(22.0 + s.capacity * 0.25, 26.0, 38.0);
+        const QRectF box(pt.x() - side / 2.0, pt.y() - side / 2.0, side, side);
+        const bool isDepot = s.id == m_depot;
 
-        p.setBrush(stationColor(s.bikes, s.capacity));
-        p.setPen(QPen(QColor(0xFF, 0xFF, 0xFF), 2.0));
-        p.drawEllipse(pt, radius, radius);
-        p.setPen(QColor(0x1F, 0x2A, 0x37));
-        p.setBrush(Qt::NoBrush);
-        p.drawEllipse(pt, radius, radius);
+        p.setBrush(isDepot ? c.signal : c.panel);
+        p.setPen(QPen(c.ink, 1.5));
+        p.drawPath(ef::cutPath(box, 7.0));
 
-        QFont f = p.font();
-        f.setBold(true);
-        f.setPointSize(8);
-        p.setFont(f);
-        p.setPen(Qt::white);
-        p.drawText(QRectF(pt.x() - radius, pt.y() - radius, radius * 2, radius * 2),
-                   Qt::AlignCenter, QString::number(s.bikes));
+        p.setFont(ef::font(ef::FontRole::Numeral));
+        p.setPen(isDepot ? c.onSignal : c.ink);
+        p.drawText(box, Qt::AlignCenter, QString::number(s.id));
 
-        f.setBold(false);
-        f.setPointSize(8);
-        p.setFont(f);
-        const QString line1 = QString("%1 %2").arg(s.id).arg(QString::fromUtf8(s.name));
-        const QString line2 = QString("%1/%2").arg(s.bikes).arg(s.capacity);
-        const QFontMetrics fm(f);
-        const int textWidth = qMax(fm.horizontalAdvance(line1), fm.horizontalAdvance(line2));
-        const QRectF plate(pt.x() + radius + 3, pt.y() - 17, textWidth + 8, 34);
-        p.setBrush(QColor(0xFF, 0xFF, 0xFF, 215));
-        p.setPen(Qt::NoPen);
-        p.drawRoundedRect(plate, 4, 4);
-        p.setPen(QColor(0x37, 0x41, 0x51));
-        p.drawText(QPointF(plate.x() + 4, plate.y() + 14), line1);
-        p.setPen(QColor(0x6B, 0x72, 0x80));
-        p.drawText(QPointF(plate.x() + 4, plate.y() + 28), line2);
+        if (showPlates) {
+            const bool isAlert = alert(s);
+            const int low = s.capacity * m_lowPercent / 100;
+            const int high = s.capacity * m_highPercent / 100;
+            const QString state = s.bikes < low ? QStringLiteral("偏低")
+                                  : s.bikes > high ? QStringLiteral("偏高")
+                                                   : QString();
+            const QString line1 =
+                QString("%1 %2").arg(s.id).arg(QString::fromUtf8(s.name));
+            const QString line2 = QString("%1 / %2").arg(s.bikes).arg(s.capacity);
+            QFont f1 = ef::font(ef::FontRole::Label);
+            f1.setPixelSize(9);
+            QFont f2 = ef::font(ef::FontRole::Field);
+            f2.setPixelSize(8);
+            const QFontMetrics fm1(f1);
+            const QFontMetrics fm2(f2);
+            const qreal textWidth =
+                std::max(fm1.horizontalAdvance(line1),
+                         fm2.horizontalAdvance(line2 + "  " + state));
+            const qreal plateW = std::max<qreal>(74.0, textWidth + 12.0);
+            const qreal plateH = 27.0;
+            qreal plateX = box.right() + 5.0;
+            if (plateX + plateW > width() - 8.0) {
+                plateX = box.left() - plateW - 5.0;
+            }
+            const qreal plateY = box.center().y() - plateH / 2.0;
+            const QRectF plate(plateX, plateY, plateW, plateH);
+            p.fillRect(plate, c.panel);
+            if (isAlert) {
+                p.fillRect(QRectF(plate.left(), plate.top(), 3.0, plate.height()),
+                           c.signal);
+            }
+            p.setPen(QPen(c.rule, 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(plate);
+
+            const qreal textX = plate.left() + (isAlert ? 7.0 : 5.0);
+            p.setFont(f1);
+            p.setPen(c.ink);
+            p.drawText(QPointF(textX, plate.top() + 11.0), line1);
+            p.setFont(f2);
+            p.setPen(c.ink2);
+            p.drawText(QPointF(textX, plate.top() + 22.0),
+                       state.isEmpty() ? line2
+                                       : QString("%1  %2").arg(line2, state));
+        }
     }
 
-    // 调度车
-    if (m_truckT >= 0.0 && m_path.size() >= 2) {
-        double totalLen = 0.0;
-        QVector<QPointF> pts;
-        QVector<double> lens;
-        for (int id : m_path) {
-            const ds::Station* s = m_system->findStation(id);
-            if (s == nullptr) {
-                continue;
-            }
-            pts.push_back(screenPos(*s));
+    // 目标与告警标记最后画，避免被相邻站点的标签牌盖住。
+    for (int i = 0; i < m_system->stationCount(); ++i) {
+        const ds::Station& s = m_system->stationAt(i);
+        const QPointF pt = screenPos(s);
+        const qreal side = std::clamp(22.0 + s.capacity * 0.25, 26.0, 38.0);
+        const QRectF box(pt.x() - side / 2.0, pt.y() - side / 2.0, side, side);
+        if (m_targets.contains(s.id)) {
+            const QRectF mark(box.left() - 3.0, box.top() - 3.0, 7.0, 7.0);
+            p.fillRect(mark, c.signal);
+            p.setPen(QPen(c.ink, 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(mark);
         }
-        for (int i = 0; i + 1 < pts.size(); ++i) {
-            const double len = QLineF(pts[i], pts[i + 1]).length();
+        if (alert(s)) {
+            const QRectF flag(box.right() - 9.0, box.top() - 9.0, 10.0, 10.0);
+            p.fillRect(flag, c.signal);
+            p.setPen(QPen(c.ink, 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(flag);
+            p.setFont(ef::font(ef::FontRole::Small));
+            p.setPen(c.onSignal);
+            p.drawText(flag, Qt::AlignCenter, QStringLiteral("!"));
+        }
+    }
+
+    // 调度车：强调色实心块，是当前所在位置。
+    if (m_truckT >= 0.0 && m_path.size() >= 2) {
+        QVector<QPointF> pathPts;
+        for (int id : m_path) {
+            if (pts.contains(id)) {
+                pathPts.push_back(pts.value(id));
+            }
+        }
+        double totalLen = 0.0;
+        QVector<double> lens;
+        for (int i = 0; i + 1 < pathPts.size(); ++i) {
+            const double len = QLineF(pathPts[i], pathPts[i + 1]).length();
             lens.push_back(len);
             totalLen += len;
         }
         if (totalLen > 0.0) {
-            double target = qBound(0.0, m_truckT, 1.0) * totalLen;
-            QPointF pos = pts.front();
+            double target = std::clamp(m_truckT, 0.0, 1.0) * totalLen;
+            QPointF pos = pathPts.front();
             for (int i = 0; i < lens.size(); ++i) {
                 if (target <= lens[i]) {
                     const double t = lens[i] > 0.0 ? target / lens[i] : 0.0;
-                    pos = pts[i] + (pts[i + 1] - pts[i]) * t;
+                    pos = pathPts[i] + (pathPts[i + 1] - pathPts[i]) * t;
                     break;
                 }
                 target -= lens[i];
-                pos = pts[i + 1];
+                pos = pathPts[i + 1];
             }
-            p.setBrush(QColor(0xF2, 0x99, 0x4A));
-            p.setPen(QPen(Qt::white, 2.0));
-            p.drawEllipse(pos, 10.0, 10.0);
-            p.setPen(QColor(0x7A, 0x4A, 0x12));
-            QFont f = p.font();
-            f.setBold(true);
-            f.setPointSize(8);
-            p.setFont(f);
-            p.drawText(pos + QPointF(12, -10), "调度车");
+            const QRectF car(pos.x() - 8.0, pos.y() - 8.0, 16.0, 16.0);
+            p.fillPath(ef::cutPath(car, 4.0), c.signal);
+            p.setPen(QPen(c.ink, 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(ef::cutPath(car, 4.0));
+            p.setFont(ef::font(ef::FontRole::Small));
+            p.setPen(c.ink);
+            p.drawText(pos + QPointF(12, -8), QStringLiteral("调度车"));
         }
     }
 
-    // 图例
-    QFont f = p.font();
-    f.setPointSize(8);
-    f.setBold(false);
-    p.setFont(f);
-    int x = 20;
-    const int y = height() - 16;
-    struct Legend {
-        QColor color;
-        const char* text;
+    // 图例。
+    const int ly = height() - 14;
+    int lx = 16;
+    const auto legendText = [&](const QString& text) {
+        p.setPen(c.ink2);
+        p.setFont(ef::font(ef::FontRole::Small));
+        p.drawText(QPointF(lx + 18, ly), text);
+        lx += 100;
     };
-    const Legend legends[] = {
-        {QColor(0x2F, 0x80, 0xED), "正常"},
-        {QColor(0xF2, 0x99, 0x4A), "偏高"},
-        {QColor(0xEB, 0x57, 0x57), "偏低/阻断"},
-        {QColor(0xF2, 0xC9, 0x4C), "调度路线"},
-    };
-    for (const auto& item : legends) {
-        p.setBrush(item.color);
-        p.setPen(Qt::NoPen);
-        p.drawRoundedRect(QRectF(x, y - 9, 12, 10), 2, 2);
-        p.setPen(QColor(0x4B, 0x55, 0x63));
-        p.drawText(x + 17, y, QString::fromUtf8(item.text));
-        x += 92;
-    }
+    p.fillRect(QRectF(lx, ly - 10, 12, 10), c.panel);
+    p.setPen(QPen(c.ink, 1.0));
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(QRectF(lx, ly - 10, 12, 10));
+    legendText(QStringLiteral("正常"));
+    p.fillRect(QRectF(lx, ly - 10, 12, 10), c.panel);
+    p.setPen(QPen(c.ink, 1.0));
+    p.drawRect(QRectF(lx, ly - 10, 12, 10));
+    p.fillRect(QRectF(lx + 8, ly - 12, 6, 6), c.signal);
+    legendText(QStringLiteral("偏低 / 偏高"));
+    p.setPen(QPen(c.ink, 1.5, Qt::DashLine));
+    p.drawLine(QPointF(lx, ly - 5), QPointF(lx + 12, ly - 5));
+    legendText(QStringLiteral("阻断"));
+    p.setPen(QPen(c.trace, 3.0));
+    p.drawLine(QPointF(lx, ly - 5), QPointF(lx + 12, ly - 5));
+    legendText(QStringLiteral("调度路线"));
+    p.fillRect(QRectF(lx, ly - 10, 8, 8), c.signal);
+    p.setPen(QPen(c.ink, 1.0));
+    p.drawRect(QRectF(lx, ly - 10, 8, 8));
+    legendText(QStringLiteral("目标"));
 }
 
-void MapCanvas::mousePressEvent(QMouseEvent* event) {
+int MapCanvas::hitStation(const QPointF& pos) {
     if (m_system == nullptr) {
-        return;
+        return -1;
     }
     updateTransform();
-    double best = 22.0;
-    int bestId = -1;
     for (int i = 0; i < m_system->stationCount(); ++i) {
         const ds::Station& s = m_system->stationAt(i);
         const QPointF pt = screenPos(s);
-        const double d = QLineF(pt, event->position()).length();
-        if (d < best) {
-            best = d;
-            bestId = s.id;
+        const qreal side = std::clamp(22.0 + s.capacity * 0.25, 26.0, 38.0);
+        if (QLineF(pt, pos).length() <= side / 2.0 + 6.0) {
+            return s.id;
         }
     }
-    if (bestId >= 0) {
-        emit stationClicked(bestId);
+    return -1;
+}
+
+void MapCanvas::mousePressEvent(QMouseEvent* event) {
+    const int id = hitStation(event->position());
+    if (id < 0) {
+        return;
     }
+    if (m_stationClicked) {
+        m_stationClicked(id);
+    }
+    event->accept();
+}
+
+void MapCanvas::mouseMoveEvent(QMouseEvent* event) {
+    const int id = hitStation(event->position());
+    if (id != m_hoverId) {
+        m_hoverId = id;
+        if (id >= 0) {
+            setCursor(Qt::PointingHandCursor);
+        } else {
+            unsetCursor();
+        }
+    }
+    QWidget::mouseMoveEvent(event);
 }
