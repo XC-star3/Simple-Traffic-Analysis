@@ -15,10 +15,8 @@
 - Qt 6.10.1 Widgets（只用于界面、绘图、定时器、文件对话框）
 - CMake 3.21+ / Ninja
 - 核心层 `core/` 为纯 C++：不包含 Qt 头文件，不使用 STL 容器和 STL 算法
-- 自研数据结构：`Vector`、`Stack`、`Queue`、`MinHeap`、`HashMap`、邻接表 `Graph`
-- 自研算法：Dijkstra（二叉堆 + 懒删除）、BFS 可达性、最近邻 + 2-opt 路线排序、栈+队列混合调度
-
-> 课程要求“不允许使用软件包来实现”。本项目的边界是：**GUI 框架必须使用 Qt，但所有数据结构与核心算法均为手写**；`core/` 可以脱离 Qt 单独编译、单独测试。`QString`、`QVector`、`QHash` 只出现在 `apps/` 界面层。
+- 数据结构：`Vector`、`Stack`、`Queue`、`MinHeap`、`HashMap`、邻接表 `Graph`
+- 算法：Dijkstra（二叉堆 + 懒删除）、BFS 可达性、最近邻 + 2-opt 路线排序、栈+队列混合调度
 
 ## 目录
 
@@ -40,8 +38,6 @@
 ├─ tests/test_main.cpp             控制台测试（不链接 Qt）
 ```
 
-课程报告、原始题目文档和界面截图保留在本地，未纳入本仓库。
-
 ## 构建
 
 环境要求：Windows 10/11，Qt 6.10.1 MinGW 套件，CMake ≥ 3.21，Ninja。
@@ -51,8 +47,6 @@ $env:PATH = 'E:\Qt\6.10.1\mingw_64\bin;E:\Qt\Tools\mingw1310_64\bin;E:\Qt\Tools\
 cmake --preset mingw-debug
 cmake --build build/debug -j 4
 ```
-
-如果 Qt 不在 `E:\Qt\6.10.1\mingw_64`，修改 `CMakePresets.json` 中的 `CMAKE_PREFIX_PATH`、编译器与 Ninja 路径即可。
 
 ## 运行
 
