@@ -86,6 +86,8 @@ QLabel#efHint { color: @ink2; font-size: 11px; }
 QLabel#efBarField { color: @commandText; font-size: 11px; }
 QLabel#efBrand { color: @commandText; font-size: 15px; font-weight: 700; }
 QLabel#efBrandSub { color: @commandMuted; font-size: 10px; }
+QLabel#efDisplay { color: @ink; font-size: 40px; font-weight: 800; }
+QLabel#efNumeral { color: @signal; font-size: 44px; font-weight: 800; }
 QLabel#efError { color: @onSignal; background: @signal; padding: 6px 8px; border-left: 4px solid @ink; }
 QLabel#efAlertCell { color: @onSignal; background: @signal; font-weight: 600; }
 QFrame#efRule { background: @rule; border: none; }
@@ -169,6 +171,8 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
 QStatusBar { background: @panel; color: @ink2; border-top: 1px solid @rule; }
 QStatusBar::item { border: none; }
+QFrame#efStatusBar { background: @panel; border-top: 1px solid @rule; }
+QLabel#efStatusText { color: @ink2; font-size: 11px; }
 QToolTip {
     background: @commandBar;
     color: @commandText;

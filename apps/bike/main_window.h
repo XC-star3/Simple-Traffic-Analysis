@@ -1,7 +1,7 @@
 #pragma once
 
-#include <QMainWindow>
 #include <QVector>
+#include <QWidget>
 
 #include "ds/bike_system.h"
 
@@ -18,14 +18,19 @@ class QTimer;
 namespace ef {
 class EfCommandBar;
 class EfMetrics;
+class EfStatusStrip;
 }  // namespace ef
 
 class MapCanvas;
 
-class MainWindow : public QMainWindow {
+class BikeWindow : public QWidget {
 public:
-    explicit MainWindow(QWidget* parent = nullptr);
+    explicit BikeWindow(QWidget* parent = nullptr);
     void runDemo();
+
+    ef::EfCommandBar* commandBar() const { return m_bar; }
+    void suspend();
+    void refreshTheme();
 
 private:
     void buildUi();
@@ -59,6 +64,7 @@ private:
     MapCanvas* m_canvas = nullptr;
     ef::EfCommandBar* m_bar = nullptr;
     ef::EfMetrics* m_metrics = nullptr;
+    ef::EfStatusStrip* m_status = nullptr;
     QLabel* m_contextFields = nullptr;
 
     QComboBox* m_mode = nullptr;

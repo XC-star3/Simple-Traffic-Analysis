@@ -10,6 +10,7 @@ bool TruckYard::configure(int capacity, int tempCapacity, double feePerHour) {
     if (capacity <= 0 || tempCapacity < 0 || !std::isfinite(feePerHour) ||
         feePerHour < 0.0) {
         m_configured = false;
+        m_departPending = false;
         return false;
     }
 
@@ -31,16 +32,28 @@ bool TruckYard::configure(int capacity, int tempCapacity, double feePerHour) {
     m_served = 0;
     m_maxTemp = 0;
     m_totalWait = 0.0;
+    m_departPending = false;
     m_configured = true;
 
     log(0.0, "系统启动：主通道容量 %d 辆，临时区容量 %d 辆，费率 %.2f 元/小时",
         m_config.capacity, m_config.tempCapacity, m_config.feePerHour);
+    if (m_config.capacity > 1 &&
+        m_config.tempCapacity < m_config.capacity - 1) {
+        logWarning(0.0,
+                   "警告：临时区仅 %d 个车位，最内侧货车让路需要 %d 个；"
+                   "相关离场会被拒绝",
+                   m_config.tempCapacity, m_config.capacity - 1);
+    }
     return true;
 }
 
 bool TruckYard::arrive(int id, CargoType type, double t, char* err, int errSize) {
     if (!m_configured) {
         setError(err, errSize, "系统尚未初始化");
+        return false;
+    }
+    if (m_departPending) {
+        setError(err, errSize, "正在让路，请稍候");
         return false;
     }
     if (id <= 0) {
@@ -89,8 +102,23 @@ bool TruckYard::arrive(int id, CargoType type, double t, char* err, int errSize)
 
 bool TruckYard::depart(int id, double t, double* fee, double* dwell,
                        char* err, int errSize) {
+    if (!beginDepart(id, t, fee, dwell, err, errSize)) {
+        return false;
+    }
+    if (m_departPending) {
+        return finishDepart(t);
+    }
+    return true;
+}
+
+bool TruckYard::beginDepart(int id, double t, double* fee, double* dwell,
+                            char* err, int errSize) {
     if (!m_configured) {
         setError(err, errSize, "系统尚未初始化");
+        return false;
+    }
+    if (m_departPending) {
+        setError(err, errSize, "正在让路，请稍候");
         return false;
     }
     int index = -1;
@@ -139,8 +167,8 @@ bool TruckYard::depart(int id, double t, double* fee, double* dwell,
     }
     const int above = m_channel.size() - pos - 1;
     if (above > m_config.tempCapacity) {
-        log(t, "警告：货车 %d 让路需要 %d 个临时位，超过临时区容量 %d",
-            id, above, m_config.tempCapacity);
+        logWarning(t, "警告：货车 %d 让路需要 %d 个临时位，超过临时区容量 %d，未移动任何车辆",
+                   id, above, m_config.tempCapacity);
         setError(err, errSize, "临时等候区容量不足，无法让路");
         return false;
     }
@@ -152,6 +180,20 @@ bool TruckYard::depart(int id, double t, double* fee, double* dwell,
     }
     if (m_temp.size() > m_maxTemp) {
         m_maxTemp = m_temp.size();
+    }
+    if (above > 0) {
+        char ids[160] = {0};
+        int off = 0;
+        for (int i = 0; i < m_temp.size(); ++i) {
+            const int written = std::snprintf(
+                ids + off, sizeof(ids) - static_cast<size_t>(off), "%sT%d",
+                i == 0 ? "" : " ", m_trucks[m_temp.at(i)].id);
+            if (written <= 0 || off + written >= static_cast<int>(sizeof(ids))) {
+                break;
+            }
+            off += written;
+        }
+        log(t, "让路：%s 进入临时区（%d 辆）", ids, above);
     }
 
     m_channel.pop();  // 目标货车离开
@@ -167,20 +209,52 @@ bool TruckYard::depart(int id, double t, double* fee, double* dwell,
     log(t, "货车 %d（%s）离场，停留 %.1f 分钟，让路 %d 辆，费用 %.2f 元",
         id, cargoName(truck.type), waited, above, money);
 
-    while (!m_temp.empty()) {
-        const int back = m_temp.pop();
-        m_trucks[back].state = TruckState::Channel;
-        m_channel.push(back);
-    }
-
-    fillChannel(t);
-
     if (fee != nullptr) {
         *fee = money;
     }
     if (dwell != nullptr) {
         *dwell = waited;
     }
+
+    if (above == 0) {
+        // 没有挡路车辆，不需要在临时区停留。
+        fillChannel(t);
+        return true;
+    }
+
+    // 挡路车辆留在临时区，等界面展示完“让路”后再调用 finishDepart 回装。
+    m_departPending = true;
+    return true;
+}
+
+bool TruckYard::finishDepart(double t) {
+    if (!m_departPending) {
+        return false;
+    }
+
+    if (!m_temp.empty()) {
+        char ids[160] = {0};
+        int off = 0;
+        for (int i = 0; i < m_temp.size(); ++i) {
+            const int written = std::snprintf(
+                ids + off, sizeof(ids) - static_cast<size_t>(off), "%sT%d",
+                i == 0 ? "" : " ", m_trucks[m_temp.at(i)].id);
+            if (written <= 0 || off + written >= static_cast<int>(sizeof(ids))) {
+                break;
+            }
+            off += written;
+        }
+        log(t, "回装：%s 从临时区回到主通道", ids);
+    }
+
+    while (!m_temp.empty()) {
+        const int back = m_temp.pop();
+        m_trucks[back].state = TruckState::Channel;
+        m_channel.push(back);
+    }
+
+    m_departPending = false;
+    fillChannel(t);
     return true;
 }
 
@@ -301,8 +375,8 @@ void TruckYard::fillChannel(double t) {
         m_trucks[index].state = TruckState::Channel;
         m_trucks[index].enterTime = t;
         m_channel.push(index);
-        log(t, "货车 %d 进入主通道（空位 %d）", m_trucks[index].id,
-            m_config.capacity - m_channel.size());
+        log(t, "货车 %d 从%s队列进入主通道（空位 %d）", m_trucks[index].id,
+            cargoName(m_trucks[index].type), m_config.capacity - m_channel.size());
     }
 }
 
@@ -329,6 +403,23 @@ int TruckYard::channelPos(int index) const {
 void TruckYard::log(double t, const char* fmt, ...) {
     Event e;
     e.time = t;
+    e.warning = false;
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(e.text, sizeof(e.text), fmt, args);
+    va_end(args);
+
+    if (m_events.size() >= 300) {
+        m_events.removeAt(0);
+    }
+    m_events.push_back(e);
+    ++m_eventSeq;
+}
+
+void TruckYard::logWarning(double t, const char* fmt, ...) {
+    Event e;
+    e.time = t;
+    e.warning = true;
     va_list args;
     va_start(args, fmt);
     std::vsnprintf(e.text, sizeof(e.text), fmt, args);

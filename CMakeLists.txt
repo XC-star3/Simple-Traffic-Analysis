@@ -11,7 +11,7 @@ endif()
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
 qt_standard_project_setup()
-# 两个程序的界面类不使用 Q_OBJECT（信号改成 std::function 回调），
+# 界面类不使用 Q_OBJECT（信号改成 std::function 回调 / 普通 connect），
 # 因此关掉 AutoMoc，避免多余的 moc 预处理步骤。
 set(CMAKE_AUTOMOC OFF)
 set(CMAKE_AUTOUIC OFF)
@@ -45,32 +45,21 @@ set(UI_FONTS
     apps/common/fonts/Saira-OFL.txt
 )
 
-# 基础题 2：快递中转栈-队列混合调度模拟
-qt_add_executable(truck_sim WIN32
-    apps/truck/main.cpp
+# 单窗口任务台：题 2 与题 7 合并在一个 exe 中，可运行时切换。
+# 两个题目不再单独生成 exe；它们的界面类作为页面被本目标复用。
+qt_add_executable(traffic_sim WIN32
+    apps/combined/main.cpp
+    apps/combined/shell.cpp
     apps/truck/main_window.cpp
     apps/truck/yard_canvas.cpp
-)
-target_link_libraries(truck_sim PRIVATE ds_core ds_ui Qt6::Widgets)
-target_include_directories(truck_sim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/apps)
-target_compile_options(truck_sim PRIVATE -Wall -Wextra)
-set_target_properties(truck_sim PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
-qt_add_resources(truck_sim "truck_fonts"
-    PREFIX "/fonts"
-    BASE ${CMAKE_CURRENT_SOURCE_DIR}/apps/common/fonts
-    FILES ${UI_FONTS})
-
-# 扩展题 7：城市公共自行车调度路径规划系统
-qt_add_executable(bike_sim WIN32
-    apps/bike/main.cpp
     apps/bike/main_window.cpp
     apps/bike/map_canvas.cpp
 )
-target_link_libraries(bike_sim PRIVATE ds_core ds_ui Qt6::Widgets)
-target_include_directories(bike_sim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/apps)
-target_compile_options(bike_sim PRIVATE -Wall -Wextra)
-set_target_properties(bike_sim PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
-qt_add_resources(bike_sim "bike_fonts"
+target_link_libraries(traffic_sim PRIVATE ds_core ds_ui Qt6::Widgets)
+target_include_directories(traffic_sim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/apps)
+target_compile_options(traffic_sim PRIVATE -Wall -Wextra)
+set_target_properties(traffic_sim PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+qt_add_resources(traffic_sim "traffic_fonts"
     PREFIX "/fonts"
     BASE ${CMAKE_CURRENT_SOURCE_DIR}/apps/common/fonts
     FILES ${UI_FONTS})

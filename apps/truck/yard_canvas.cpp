@@ -203,21 +203,24 @@ void YardCanvas::paintEvent(QPaintEvent*) {
     p.drawRect(QRectF(channelX(), channelY() + sh + 3.0,
                       cap * (sw + gy) - gy, 3.0));
 
-    // 临时区。
+    // 临时区。区满时整块改用强调色描边，和右侧告警条呼应。
+    const int tempUsed = m_yard->temp().size();
+    const bool tempFull = tempCap > 0 && tempUsed >= tempCap;
     p.setFont(ef::font(ef::FontRole::Label));
-    p.setPen(c.ink);
+    p.setPen(tempFull ? c.signal : c.ink);
     p.drawText(QPointF(channelX(), tempY() - 10.0), QStringLiteral("临时等候区"));
     p.setFont(ef::font(ef::FontRole::Field));
-    p.setPen(c.ink2);
+    p.setPen(tempFull ? c.signal : c.ink2);
     p.drawText(QPointF(channelX() + 108.0, tempY() - 12.0),
-               QString("%1 / %2 辆")
-                   .arg(m_yard->temp().size())
-                   .arg(tempCap));
+               QString("%1 / %2 辆%3")
+                   .arg(tempUsed)
+                   .arg(tempCap)
+                   .arg(tempFull ? QStringLiteral(" · 区满") : QString()));
     for (int i = 0; i < tempCap; ++i) {
         const QRectF r(channelX() + i * (sw + gy), tempY(), sw, sh);
         p.fillRect(r, c.panel);
         ef::drawHatch(p, r.adjusted(1, 1, -1, -1), c.ink, 0.16);
-        p.setPen(QPen(c.rule, 1.0));
+        p.setPen(QPen(tempFull ? c.signal : c.rule, tempFull ? 2.0 : 1.0));
         p.setBrush(Qt::NoBrush);
         p.drawRect(r);
     }

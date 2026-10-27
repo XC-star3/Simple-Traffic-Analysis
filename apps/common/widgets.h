@@ -19,6 +19,7 @@ class QMouseEvent;
 class QPaintEvent;
 class QPainter;
 class QStyleOptionViewItem;
+class QTimer;
 class QVBoxLayout;
 
 namespace ef {
@@ -91,6 +92,44 @@ private:
     QVariantAnimation* m_anim = nullptr;
 };
 
+// 克莱因蓝实心告警条：标题 + 可换行说明 + 关闭按钮。
+// 用于“临时区容量不足”这类需要持续可见、可确认的边界提示。
+class EfAlertBar : public QFrame {
+public:
+    explicit EfAlertBar(QWidget* parent = nullptr);
+
+    void showAlert(const QString& title, const QString& detail);
+    void clearAlert();
+    bool hasAlert() const { return !isHidden(); }
+    void refreshTheme();
+
+    EfButton* dismissButton() const { return m_close; }
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    QLabel* m_eyebrow = nullptr;
+    QLabel* m_title = nullptr;
+    QLabel* m_detail = nullptr;
+    EfButton* m_close = nullptr;
+};
+
+// 页面底部状态条：左侧临时消息，右侧固定 // READY。
+// 两个任务页和任务选择页共用，避免依赖 QMainWindow::statusBar()。
+class EfStatusStrip : public QFrame {
+public:
+    explicit EfStatusStrip(QWidget* parent = nullptr);
+
+    void showMessage(const QString& text, int timeoutMs = 8000);
+    void setReadyText(const QString& text);
+
+private:
+    QLabel* m_text = nullptr;
+    QLabel* m_ready = nullptr;
+    QTimer* m_timer = nullptr;
+};
+
 struct Metric {
     QString eyebrow;
     QString value;
@@ -131,6 +170,8 @@ public:
 
     void setFields(const QString& text);
     EfButton* themeButton() const { return m_theme; }
+    EfButton* taskButton() const { return m_task; }
+    void setTaskButtonVisible(bool visible);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -139,6 +180,7 @@ private:
     QWidget* m_seal = nullptr;
     QWidget* m_section = nullptr;
     QLabel* m_fields = nullptr;
+    EfButton* m_task = nullptr;
     EfButton* m_theme = nullptr;
 };
 

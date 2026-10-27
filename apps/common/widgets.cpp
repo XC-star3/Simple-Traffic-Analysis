@@ -14,6 +14,7 @@
 #include <QPen>
 #include <QStyle>
 #include <QStyledItemDelegate>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -460,6 +461,143 @@ void EfPanel::leaveEvent(QEvent* event) {
     QFrame::leaveEvent(event);
 }
 
+EfAlertBar::EfAlertBar(QWidget* parent) : QFrame(parent) {
+    setFrameShape(QFrame::NoFrame);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+    setFocusPolicy(Qt::NoFocus);
+
+    auto* row = new QHBoxLayout(this);
+    row->setContentsMargins(12, 6, 6, 6);
+    row->setSpacing(8);
+
+    auto* textCol = new QVBoxLayout;
+    textCol->setContentsMargins(0, 0, 0, 0);
+    textCol->setSpacing(1);
+
+    m_eyebrow = new QLabel(QStringLiteral("// ALERT"), this);
+    QFont eyebrow = ef::font(FontRole::Eyebrow);
+    eyebrow.setPixelSize(8);
+    m_eyebrow->setFont(eyebrow);
+    m_eyebrow->setFocusPolicy(Qt::NoFocus);
+
+    m_title = new QLabel(this);
+    QFont titleFont = ef::font(FontRole::Label);
+    titleFont.setPixelSize(13);
+    titleFont.setWeight(QFont::Bold);
+    m_title->setFont(titleFont);
+    m_title->setFocusPolicy(Qt::NoFocus);
+
+    auto* titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(8);
+    titleRow->addWidget(m_eyebrow, 0, Qt::AlignBottom);
+    titleRow->addWidget(m_title, 0, Qt::AlignBottom);
+    titleRow->addStretch(1);
+
+    m_detail = new QLabel(this);
+    m_detail->setWordWrap(true);
+    m_detail->setFont(ef::font(FontRole::Small));
+    m_detail->setFocusPolicy(Qt::NoFocus);
+
+    textCol->addLayout(titleRow);
+    textCol->addWidget(m_detail);
+    row->addLayout(textCol, 1);
+
+    m_close = new EfButton(QStringLiteral("关闭"), EfButton::Variant::OnDark, this);
+    m_close->setFixedSize(56, 24);
+    QFont closeFont = ef::font(FontRole::Small);
+    closeFont.setPixelSize(10);
+    m_close->setFont(closeFont);
+    m_close->setAccessibleName(QStringLiteral("关闭告警"));
+    connect(m_close, &QPushButton::clicked, this, [this]() { clearAlert(); });
+    row->addWidget(m_close, 0, Qt::AlignTop);
+
+    setVisible(false);
+    refreshTheme();
+}
+
+void EfAlertBar::showAlert(const QString& title, const QString& detail) {
+    m_title->setText(title);
+    m_detail->setText(detail);
+    m_detail->setVisible(!detail.isEmpty());
+    setAccessibleName(QStringLiteral("告警：%1").arg(title));
+    setAccessibleDescription(detail);
+    refreshTheme();
+    show();
+    updateGeometry();
+}
+
+void EfAlertBar::clearAlert() {
+    m_title->clear();
+    m_detail->clear();
+    setAccessibleName(QStringLiteral("告警"));
+    setAccessibleDescription(QString());
+    hide();
+}
+
+void EfAlertBar::refreshTheme() {
+    const Palette& c = ef::palette();
+    const QString base = QStringLiteral("background: transparent; color: %1;")
+                             .arg(c.onSignal.name());
+    m_eyebrow->setStyleSheet(base + QStringLiteral("font-weight: 600;"));
+    m_title->setStyleSheet(base + QStringLiteral("font-weight: 700;"));
+    m_detail->setStyleSheet(base);
+    m_close->update();
+    update();
+}
+
+void EfAlertBar::paintEvent(QPaintEvent*) {
+    QPainter p(this);
+    const Palette& c = ef::palette();
+    p.fillRect(rect(), c.signal);
+    p.fillRect(QRect(0, 0, 4, height()), c.ink);
+    p.setPen(QPen(c.ink, 1.0));
+    p.drawLine(0, height() - 1, width(), height() - 1);
+}
+
+EfStatusStrip::EfStatusStrip(QWidget* parent) : QFrame(parent) {
+    setObjectName(QStringLiteral("efStatusBar"));
+    setFixedHeight(24);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    setFocusPolicy(Qt::NoFocus);
+
+    auto* row = new QHBoxLayout(this);
+    row->setContentsMargins(12, 0, 12, 0);
+    row->setSpacing(8);
+
+    m_text = new QLabel(QStringLiteral("就绪"), this);
+    m_text->setObjectName(QStringLiteral("efStatusText"));
+    m_text->setFont(ef::font(FontRole::Small));
+    m_text->setFocusPolicy(Qt::NoFocus);
+
+    m_ready = new QLabel(QStringLiteral("// READY"), this);
+    m_ready->setObjectName(QStringLiteral("efEyebrow"));
+    m_ready->setFont(ef::font(FontRole::Eyebrow));
+    m_ready->setFocusPolicy(Qt::NoFocus);
+
+    row->addWidget(m_text, 1);
+    row->addWidget(m_ready);
+
+    m_timer = new QTimer(this);
+    m_timer->setSingleShot(true);
+    connect(m_timer, &QTimer::timeout, this, [this]() {
+        m_text->setText(QStringLiteral("就绪"));
+    });
+}
+
+void EfStatusStrip::showMessage(const QString& text, int timeoutMs) {
+    m_text->setText(text);
+    if (timeoutMs > 0) {
+        m_timer->start(timeoutMs);
+    } else {
+        m_timer->stop();
+    }
+}
+
+void EfStatusStrip::setReadyText(const QString& text) {
+    m_ready->setText(text);
+}
+
 EfMetrics::EfMetrics(int columns, QWidget* parent)
     : QWidget(parent), m_columns(std::max(1, columns)) {
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -609,6 +747,17 @@ EfCommandBar::EfCommandBar(const QString& seal, const QString& brand,
     m_fields->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     layout->addWidget(m_fields);
 
+    m_task = new EfButton(QStringLiteral("任务"), EfButton::Variant::OnDark, this);
+    m_task->setFixedSize(60, 28);
+    m_task->setMinimumHeight(28);
+    QFont taskFont = ef::font(FontRole::Small);
+    taskFont.setPixelSize(10);
+    m_task->setFont(taskFont);
+    m_task->setAccessibleName(QStringLiteral("返回任务选择"));
+    m_task->setToolTip(QStringLiteral("返回任务选择（Ctrl+0）"));
+    m_task->setVisible(false);
+    layout->addWidget(m_task);
+
     m_theme = new EfButton(isDark() ? QStringLiteral("浅色") : QStringLiteral("深色"),
                            EfButton::Variant::OnDark, this);
     m_theme->setFixedSize(64, 28);
@@ -620,6 +769,13 @@ void EfCommandBar::setFields(const QString& text) {
     if (m_fields != nullptr) {
         m_fields->setText(text);
         m_fields->setAccessibleName(text);
+    }
+}
+
+void EfCommandBar::setTaskButtonVisible(bool visible) {
+    if (m_task != nullptr) {
+        m_task->setVisible(visible);
+        updateGeometry();
     }
 }
 

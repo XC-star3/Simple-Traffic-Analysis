@@ -23,7 +23,6 @@
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSpinBox>
-#include <QStatusBar>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTimer>
@@ -33,12 +32,12 @@
 #include "common/widgets.h"
 #include "map_canvas.h"
 
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+BikeWindow::BikeWindow(QWidget* parent) : QWidget(parent) {
     buildUi();
     loadDemo();
 }
 
-void MainWindow::runDemo() {
+void BikeWindow::runDemo() {
     if (m_system.stationCount() == 0) {
         loadDemo();
     }
@@ -59,13 +58,16 @@ void MainWindow::runDemo() {
     simulateDispatch();
 }
 
-void MainWindow::buildUi() {
+void BikeWindow::buildUi() {
     setWindowTitle("城市公共自行车 / 调度台");
     resize(1440, 900);
     setMinimumSize(1200, 760);
 
+    auto* host = new QVBoxLayout(this);
+    host->setContentsMargins(0, 0, 0, 0);
+    host->setSpacing(0);
     auto* central = new QWidget(this);
-    setCentralWidget(central);
+    host->addWidget(central);
     auto* root = new QVBoxLayout(central);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
@@ -371,18 +373,14 @@ void MainWindow::buildUi() {
     m_truckTimer->setInterval(30);
     connect(m_truckTimer, &QTimer::timeout, this, [this]() { animateTruck(); });
 
-    statusBar()->setSizeGripEnabled(false);
-    auto* ready = new QLabel(QStringLiteral("// READY"), this);
-    ready->setObjectName(QStringLiteral("efEyebrow"));
-    ready->setFont(ef::font(ef::FontRole::Eyebrow));
-    statusBar()->addPermanentWidget(ready);
-    statusBar()->showMessage(QStringLiteral("就绪"));
+    m_status = new ef::EfStatusStrip(central);
+    root->addWidget(m_status);
 
     central->setFocusPolicy(Qt::StrongFocus);
     central->setFocus(Qt::OtherFocusReason);
 }
 
-void MainWindow::loadDemo() {
+void BikeWindow::loadDemo() {
     m_system.clear();
     m_truckTimer->stop();
     m_tour.clear();
@@ -455,7 +453,7 @@ void MainWindow::loadDemo() {
     setStatus(QStringLiteral("示例地图已加载：10 个站点、15 条道路"));
 }
 
-void MainWindow::invalidateRoute(const QString& reason) {
+void BikeWindow::invalidateRoute(const QString& reason) {
     const bool hadRoute = !m_tour.isEmpty() || !m_path.isEmpty();
     m_truckTimer->stop();
     m_tour.clear();
@@ -472,7 +470,7 @@ void MainWindow::invalidateRoute(const QString& reason) {
     }
 }
 
-void MainWindow::confirmClearAll() {
+void BikeWindow::confirmClearAll() {
     if (m_system.stationCount() == 0) {
         setStatus(QStringLiteral("路网已经是空的"));
         return;
@@ -517,7 +515,7 @@ void MainWindow::confirmClearAll() {
     }
 }
 
-void MainWindow::clearAll() {
+void BikeWindow::clearAll() {
     m_system.clear();
     m_truckTimer->stop();
     m_tour.clear();
@@ -544,7 +542,7 @@ void MainWindow::clearAll() {
     setStatus(QStringLiteral("路网已清空"));
 }
 
-void MainWindow::refreshAll() {
+void BikeWindow::refreshAll() {
     refreshSources();
     refreshStations();
     refreshEdges();
@@ -556,7 +554,7 @@ void MainWindow::refreshAll() {
     m_canvas->update();
 }
 
-void MainWindow::refreshSources() {
+void BikeWindow::refreshSources() {
     const int current = m_source->currentData().isValid() ? m_source->currentData().toInt() : -1;
     const int destCurrent = m_dest->currentData().isValid() ? m_dest->currentData().toInt() : -1;
     {
@@ -585,7 +583,7 @@ void MainWindow::refreshSources() {
     }
 }
 
-void MainWindow::rebuildTargets() {
+void BikeWindow::rebuildTargets() {
     QVector<int> previous;
     bool hadItems = false;
     for (int i = 0; i < m_targets->count(); ++i) {
@@ -619,7 +617,7 @@ void MainWindow::rebuildTargets() {
     updateSelectionView();
 }
 
-void MainWindow::updateTargetStyles() {
+void BikeWindow::updateTargetStyles() {
     const QSignalBlocker blocker(m_targets);
     for (int i = 0; i < m_targets->count(); ++i) {
         QListWidgetItem* item = m_targets->item(i);
@@ -635,7 +633,7 @@ void MainWindow::updateTargetStyles() {
     m_targets->viewport()->update();
 }
 
-void MainWindow::updateSelectionView() {
+void BikeWindow::updateSelectionView() {
     const int depot =
         m_source->currentData().isValid() ? m_source->currentData().toInt() : -1;
     {
@@ -692,7 +690,7 @@ void MainWindow::updateSelectionView() {
     }
 }
 
-void MainWindow::updateMetrics() {
+void BikeWindow::updateMetrics() {
     int targetCount = 0;
     for (int i = 0; i < m_targets->count(); ++i) {
         if (m_targets->item(i)->checkState() == Qt::Checked) {
@@ -730,7 +728,7 @@ void MainWindow::updateMetrics() {
     }
 }
 
-void MainWindow::refreshStations() {
+void BikeWindow::refreshStations() {
     m_stationTable->setRowCount(m_system.stationCount());
     for (int i = 0; i < m_system.stationCount(); ++i) {
         const ds::Station& s = m_system.stationAt(i);
@@ -780,7 +778,7 @@ void MainWindow::refreshStations() {
     }
 }
 
-void MainWindow::refreshEdges() {
+void BikeWindow::refreshEdges() {
     const QString current =
         m_edge->currentData().isValid() ? m_edge->currentData().toString() : QString();
     const QSignalBlocker blocker(m_edge);
@@ -812,7 +810,7 @@ void MainWindow::refreshEdges() {
     m_edge->setToolTip(m_edge->currentText());
 }
 
-void MainWindow::refreshAlerts() {
+void BikeWindow::refreshAlerts() {
     const ef::Palette& c = ef::palette();
     m_alerts->clear();
     if (m_system.alerts().empty()) {
@@ -835,7 +833,7 @@ void MainWindow::refreshAlerts() {
     }
 }
 
-QString MainWindow::stationLabel(int id) const {
+QString BikeWindow::stationLabel(int id) const {
     const ds::Station* s = m_system.findStation(id);
     if (s == nullptr) {
         return QString::number(id);
@@ -843,7 +841,7 @@ QString MainWindow::stationLabel(int id) const {
     return QString("%1 %2").arg(id).arg(QString::fromUtf8(s->name));
 }
 
-void MainWindow::addStationDialog() {
+void BikeWindow::addStationDialog() {
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("新增站点"));
     dialog.setMinimumWidth(440);
@@ -921,7 +919,7 @@ void MainWindow::addStationDialog() {
     setStatus(QString("已新增站点 %1").arg(idSpin->value()));
 }
 
-void MainWindow::addRoadDialog() {
+void BikeWindow::addRoadDialog() {
     if (m_system.stationCount() < 2) {
         setStatus(QStringLiteral("至少需要两个站点才能新增道路"));
         return;
@@ -997,7 +995,7 @@ void MainWindow::addRoadDialog() {
                   .arg(vCombo->currentData().toInt()));
 }
 
-void MainWindow::queryPair() {
+void BikeWindow::queryPair() {
     if (m_system.stationCount() == 0) {
         setStatus(QStringLiteral("请先加载路网"));
         return;
@@ -1043,7 +1041,7 @@ void MainWindow::queryPair() {
     setStatus(QString("查询完成：%1 个途经站点").arg(path.size()));
 }
 
-void MainWindow::checkReachability() {
+void BikeWindow::checkReachability() {
     if (m_system.stationCount() == 0) {
         return;
     }
@@ -1070,7 +1068,7 @@ void MainWindow::checkReachability() {
     setStatus(QStringLiteral("可达性检查完成"));
 }
 
-void MainWindow::planRoute() {
+void BikeWindow::planRoute() {
     if (m_system.stationCount() == 0) {
         setStatus(QStringLiteral("请先加载路网"));
         return;
@@ -1141,7 +1139,7 @@ void MainWindow::planRoute() {
     setStatus(QString("路线规划完成：%1 个站点").arg(tour.size()));
 }
 
-void MainWindow::simulateDispatch() {
+void BikeWindow::simulateDispatch() {
     if (m_tour.size() < 2) {
         setStatus(QStringLiteral("请先规划调度路线"));
         return;
@@ -1192,7 +1190,7 @@ void MainWindow::simulateDispatch() {
     setStatus(QString::fromUtf8(report.message));
 }
 
-void MainWindow::blockSelected() {
+void BikeWindow::blockSelected() {
     const QString data = m_edge->currentData().toString();
     if (data.isEmpty()) {
         return;
@@ -1218,7 +1216,7 @@ void MainWindow::blockSelected() {
     setStatus(QString("已阻断道路 %1 - %2").arg(u).arg(v));
 }
 
-void MainWindow::restoreSelected() {
+void BikeWindow::restoreSelected() {
     const QString data = m_edge->currentData().toString();
     if (data.isEmpty()) {
         return;
@@ -1239,7 +1237,7 @@ void MainWindow::restoreSelected() {
     setStatus(QString("已恢复道路 %1 - %2").arg(u).arg(v));
 }
 
-void MainWindow::animateTruck() {
+void BikeWindow::animateTruck() {
     m_progress += 0.006;
     if (m_progress >= 1.0) {
         m_progress = 1.0;
@@ -1248,16 +1246,31 @@ void MainWindow::animateTruck() {
     m_canvas->setTruckProgress(m_progress);
 }
 
-void MainWindow::toggleTheme() {
+void BikeWindow::toggleTheme() {
     ef::setDark(!ef::isDark());
     ef::apply(*qApp);
-    m_bar->themeButton()->setText(ef::isDark() ? QStringLiteral("浅色")
-                                               : QStringLiteral("深色"));
-    refreshAll();
+    refreshTheme();
     setStatus(ef::isDark() ? QStringLiteral("已切换到深色主题")
                            : QStringLiteral("已切换到浅色主题"));
 }
 
-void MainWindow::setStatus(const QString& text) {
-    statusBar()->showMessage(text, 8000);
+void BikeWindow::refreshTheme() {
+    if (m_bar != nullptr) {
+        m_bar->themeButton()->setText(ef::isDark() ? QStringLiteral("浅色")
+                                                   : QStringLiteral("深色"));
+    }
+    refreshAll();
+    update();
+}
+
+void BikeWindow::suspend() {
+    if (m_truckTimer != nullptr) {
+        m_truckTimer->stop();
+    }
+}
+
+void BikeWindow::setStatus(const QString& text) {
+    if (m_status != nullptr) {
+        m_status->showMessage(text);
+    }
 }

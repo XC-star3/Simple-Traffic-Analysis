@@ -2,14 +2,12 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QFont>
 #include <QImage>
 #include <QStringList>
 #include <QTimer>
-#include <QWidget>
 
 #include "common/theme.h"
-#include "main_window.h"
+#include "shell.h"
 
 namespace {
 
@@ -34,18 +32,38 @@ void saveScreenshot(QWidget& window, const QString& path) {
     }
 }
 
+int taskFromArguments(const QStringList& args) {
+    int task = 0;
+    const int index = args.indexOf("--task");
+    if (index >= 0 && index + 1 < args.size()) {
+        const QString value = args.at(index + 1).trimmed().toLower();
+        if (value == QStringLiteral("truck") || value == QStringLiteral("2")) {
+            task = 1;
+        } else if (value == QStringLiteral("bike") || value == QStringLiteral("7")) {
+            task = 2;
+        }
+    }
+    if (args.contains(QStringLiteral("--demo-warning")) ||
+        args.contains(QStringLiteral("--demo-letway"))) {
+        task = 1;
+    } else if (task == 0 && args.contains(QStringLiteral("--demo"))) {
+        task = 1;
+    }
+    return task;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
-    app.setApplicationName("快递中转场调度台");
+    app.setApplicationName(QStringLiteral("数据结构课程设计任务台"));
 
     const QStringList args = app.arguments();
-    ef::setDark(args.contains("--dark"));
+    ef::setDark(args.contains(QStringLiteral("--dark")));
     ef::apply(app);
 
-    MainWindow window;
-    const int sizeIndex = args.indexOf("--size");
+    ShellWindow window;
+    const int sizeIndex = args.indexOf(QStringLiteral("--size"));
     if (sizeIndex >= 0 && sizeIndex + 1 < args.size()) {
         const QStringList parts = args.at(sizeIndex + 1).split(QLatin1Char('x'),
                                                               Qt::SkipEmptyParts);
@@ -59,19 +77,25 @@ int main(int argc, char** argv) {
             }
         }
     }
+
+    window.showTask(taskFromArguments(args));
     window.show();
 
-    if (args.contains("--demo")) {
-        QTimer::singleShot(150, &app, [&window]() { window.runDemo(); });
+    if (args.contains(QStringLiteral("--demo-warning"))) {
+        QTimer::singleShot(250, &app, [&window]() { window.runWarningDemo(); });
+    } else if (args.contains(QStringLiteral("--demo-letway"))) {
+        QTimer::singleShot(250, &app, [&window]() { window.runLetWayDemo(); });
+    } else if (args.contains(QStringLiteral("--demo"))) {
+        QTimer::singleShot(250, &app, [&window]() { window.runDemoForCurrent(); });
     }
-    if (args.contains("--smoke")) {
-        QTimer::singleShot(900, &app, []() { QCoreApplication::quit(); });
+    if (args.contains(QStringLiteral("--smoke"))) {
+        QTimer::singleShot(1200, &app, []() { QCoreApplication::quit(); });
     }
-    const int shotIndex = args.indexOf("--screenshot");
+    const int shotIndex = args.indexOf(QStringLiteral("--screenshot"));
     if (shotIndex >= 0 && shotIndex + 1 < args.size()) {
         const QString path = args[shotIndex + 1];
-        QTimer::singleShot(800, &app, [&window, path]() { saveScreenshot(window, path); });
-        QTimer::singleShot(1100, &app, []() { QCoreApplication::quit(); });
+        QTimer::singleShot(1400, &app, [&window, path]() { saveScreenshot(window, path); });
+        QTimer::singleShot(1700, &app, []() { QCoreApplication::quit(); });
     }
     return app.exec();
 }

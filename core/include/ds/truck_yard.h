@@ -46,6 +46,7 @@ struct YardStats {
 
 struct Event {
     double time = 0.0;
+    bool warning = false;  // 界面据此高亮告警行，而不是靠匹配文本前缀。
     char text[200] = {0};
 };
 
@@ -64,6 +65,13 @@ public:
     bool arrive(int id, CargoType type, double t, char* err = nullptr, int errSize = 0);
     bool depart(int id, double t, double* fee = nullptr, double* dwell = nullptr,
                 char* err = nullptr, int errSize = 0);
+
+    // 分两步离场：begin 先把挡路车辆移入临时区并让目标离场，finish 再原序回装、补位。
+    // 界面在两步之间刷新，就能真正看到临时等候区被占用；测试仍可直接用同步的 depart()。
+    bool beginDepart(int id, double t, double* fee = nullptr, double* dwell = nullptr,
+                     char* err = nullptr, int errSize = 0);
+    bool finishDepart(double t);
+    bool departurePending() const { return m_departPending; }
 
     bool hasTruck(int id) const;
     const Truck* findTruck(int id) const;
@@ -86,6 +94,7 @@ public:
 private:
     void fillChannel(double t);
     void log(double t, const char* fmt, ...);
+    void logWarning(double t, const char* fmt, ...);
     bool removeFromQueue(int index, CargoType type);
     int channelPos(int index) const;
     static void setError(char* err, int errSize, const char* msg);
@@ -106,6 +115,7 @@ private:
     int m_served = 0;
     int m_maxTemp = 0;
     double m_totalWait = 0.0;
+    bool m_departPending = false;
 };
 
 }  // namespace ds

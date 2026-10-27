@@ -109,7 +109,7 @@ void testTruckYard() {
     CHECK(std::fabs(fee) < 1e-9);
     CHECK(cancelYard.checkInvariant());
 
-    // 临时区不足：拒绝离场且状态不变。
+    // 临时区不足：拒绝离场且状态不变，并留下可高亮的告警事件。
     ds::TruckYard small;
     CHECK(small.configure(3, 1, 10.0));
     CHECK(small.arrive(301, ds::CargoType::Fresh, 0.0));
@@ -120,6 +120,41 @@ void testTruckYard() {
     CHECK(err[0] != '\0');
     CHECK(small.channel().size() == 3);
     CHECK(small.checkInvariant());
+    CHECK(small.events().back().warning);
+    CHECK(small.events()[1].warning);  // 启动时已提示临时区小于容量-1
+
+    // 容量 1 时不需要临时位，不应产生启动告警。
+    ds::TruckYard single;
+    CHECK(single.configure(1, 0, 10.0));
+    CHECK(single.events().size() == 1);
+    CHECK(!single.events().back().warning);
+
+    // 分步离场：begin 后临时区保留挡路车辆，finish 再回装并补位。
+    ds::TruckYard staged;
+    CHECK(staged.configure(3, 2, 10.0));
+    CHECK(staged.arrive(601, ds::CargoType::Fresh, 0.0));
+    CHECK(staged.arrive(602, ds::CargoType::Normal, 0.0));
+    CHECK(staged.arrive(603, ds::CargoType::Bulk, 0.0));
+    CHECK(staged.arrive(604, ds::CargoType::Fresh, 0.0));
+    double stagedFee = 0.0;
+    double stagedDwell = 0.0;
+    char stagedErr[128] = {0};
+    CHECK(staged.beginDepart(601, 1.0, &stagedFee, &stagedDwell, stagedErr,
+                             sizeof(stagedErr)));
+    CHECK(staged.departurePending());
+    CHECK(staged.channel().size() == 0);
+    CHECK(staged.temp().size() == 2);
+    CHECK(stagedFee > 0.0 && stagedDwell > 0.0);
+    CHECK(staged.checkInvariant());
+    CHECK(!staged.arrive(605, ds::CargoType::Fresh, 2.0));  // 让路中禁止进场
+    CHECK(staged.finishDepart(2.0));
+    CHECK(!staged.departurePending());
+    CHECK(staged.channel().size() == 3);
+    CHECK(staged.temp().empty());
+    CHECK(staged.truckAt(staged.channel().at(0)).id == 602);
+    CHECK(staged.truckAt(staged.channel().at(1)).id == 603);
+    CHECK(staged.truckAt(staged.channel().at(2)).id == 604);
+    CHECK(staged.checkInvariant());
 
     // 优先级：空位优先给生鲜。
     ds::TruckYard priority;
